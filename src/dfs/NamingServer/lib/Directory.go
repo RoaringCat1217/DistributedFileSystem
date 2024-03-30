@@ -29,36 +29,61 @@ type FileInfo struct {
 	storageServer *StorageServerInfo
 }
 
-// rLockDirectories - RLock root and every directory specified in names
-// returns the final locked directory if successful
-// release everything it locks and returns nil if failed
-func (d *Directory) rLockDirs(names []string) *Directory {
+func (d *Directory) lockPath(names []string, readonly bool) *Directory {
+	if len(names) == 0 {
+		if readonly {
+			d.lock.RLock()
+		} else {
+			d.lock.Lock()
+		}
+		return d
+	}
 	curr := d
-	for _, name := range names {
+	final := names[len(names)-1]
+	for _, name := range names[:len(names)-1] {
 		curr.lock.RLock()
-		foundNextDir := false
+		found := false
 		for _, dir := range curr.subDirectories {
 			if dir.name == name {
+				found = true
 				curr = dir
-				foundNextDir = true
 				break
 			}
 		}
-		if !foundNextDir {
-			d.rUnlockDirs(curr)
+		if !found {
+			// cannot find a directory in the path
+			d.unlockPath(curr, true)
 			return nil
 		}
 	}
+	// curr is the parent of final
 	curr.lock.RLock()
-	return curr
+	for _, dir := range curr.subDirectories {
+		if dir.name == final {
+			if readonly {
+				dir.lock.RLock()
+			} else {
+				dir.lock.Lock()
+			}
+			return dir
+		}
+	}
+	// cannot find final
+	d.unlockPath(curr, true)
+	return nil
 }
 
-// rUnlockDirectories - RUnlock the curr directory and all of its ancestors
-func (d *Directory) rUnlockDirs(curr *Directory) {
-	for curr != nil {
-		parent := curr.parent
-		curr.lock.RUnlock()
-		curr = parent
+func (d *Directory) unlockPath(dir *Directory, readonly bool) {
+	if readonly {
+		dir.lock.RUnlock()
+	} else {
+		dir.lock.Unlock()
+	}
+	dir = dir.parent
+	for dir != nil {
+		parent := dir.parent
+		dir.lock.RUnlock()
+		dir = parent
 	}
 }
 
@@ -67,26 +92,27 @@ func (d *Directory) PathExists(pth string) bool {
 	if len(names) == 0 {
 		return false
 	}
-	curr := d.rLockDirs(names[:len(names)-1])
-	if curr == nil {
+	parent := d.lockPath(names[:len(names)-1], true)
+	if parent == nil {
 		return false
 	}
-	name := names[len(names)-1]
+	defer d.unlockPath(parent, true)
+
+	itemName := names[len(names)-1]
 	// either a directory or a file is ok
 	found := false
-	for _, dir := range curr.subDirectories {
-		if dir.name == name {
+	for _, dir := range parent.subDirectories {
+		if dir.name == itemName {
 			found = true
 			break
 		}
 	}
-	for _, file := range curr.subFiles {
-		if file.name == name {
+	for _, file := range parent.subFiles {
+		if file.name == itemName {
 			found = true
 			break
 		}
 	}
-	d.rUnlockDirs(curr)
 	return found
 }
 
@@ -95,29 +121,16 @@ func (d *Directory) MakeDirectory(pth string) *DFSException {
 	if len(names) == 0 {
 		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
-	var grandpa *Directory = nil // parent directory's parent
-	var parent *Directory = nil  // parent directory of the new directory
-	if len(names) == 1 {
-		parent = d
-	} else {
-		grandpa = d.rLockDirs(names[:len(names)-2])
-		if grandpa == nil {
-			return &DFSException{FileNotFoundException, "the parent directory does not exist."}
-		}
-		for _, dir := range grandpa.subDirectories {
-			if dir.name == names[len(names)-2] {
-				parent = dir
-				break
-			}
-		}
-		if parent == nil {
-			d.rUnlockDirs(grandpa)
-			return &DFSException{FileNotFoundException, "the parent directory does not exist."}
-		}
+
+	// wlock parent directory
+	parent := d.lockPath(names[:len(names)-1], false)
+	if parent == nil {
+		return &DFSException{FileNotFoundException, "the parent directory does not exist."}
 	}
-	// Lock the parent directory
-	parent.lock.Lock()
+	defer d.unlockPath(parent, false)
+
 	newDirName := names[len(names)-1]
+	// check if newDirName conflicts with existing files or directories
 	failed := false
 	for _, dir := range parent.subDirectories {
 		if dir.name == newDirName {
@@ -133,22 +146,15 @@ func (d *Directory) MakeDirectory(pth string) *DFSException {
 	}
 	if failed {
 		// already existed
-		parent.lock.Unlock()
-		if grandpa != nil {
-			d.rUnlockDirs(grandpa)
-		}
 		return &DFSException{FileNotFoundException, "directory's name conflicts with existing directories or files."}
 	}
+
 	// create new directory
 	newDir := &Directory{
 		name:   newDirName,
 		parent: parent,
 	}
 	parent.subDirectories = append(parent.subDirectories, newDir)
-	parent.lock.Unlock()
-	if grandpa != nil {
-		d.rUnlockDirs(grandpa)
-	}
 	return nil
 }
 
@@ -157,12 +163,14 @@ func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSExceptio
 	if len(names) == 0 {
 		return nil, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
+	// rlock parent
 	fileName := names[len(names)-1]
-	parent := d.rLockDirs(names[:len(names)-1])
+	parent := d.lockPath(names[:len(names)-1], true)
 	if parent == nil {
 		return nil, &DFSException{FileNotFoundException, fmt.Sprintf("cannot find file %s.", pth)}
 	}
-	defer d.rUnlockDirs(parent)
+	defer d.unlockPath(parent, true)
+
 	for _, file := range parent.subFiles {
 		if file.name == fileName {
 			return file.storageServer, nil
@@ -175,4 +183,75 @@ func (d *Directory) RegisterFiles(pths []string, files []*FileInfo) []bool {
 	// lock the entire FS
 	d.lock.Lock()
 	defer d.lock.Unlock()
+
+	success := make([]bool, 0)
+	for i := range pths {
+		pth := pths[i]
+		file := files[i]
+		names := pathToNames(pth)
+		if len(names) == 0 {
+			success = append(success, false)
+			continue
+		}
+		fileName := names[len(names)-1]
+		curr := d
+		failed := false
+		for _, name := range names[:len(names)-1] {
+			found := false
+			for _, dir := range curr.subDirectories {
+				if dir.name == name {
+					found = true
+					curr = dir
+					break
+				}
+			}
+			if !found {
+				// try to create a new directory, if no conflicts
+				for _, file := range curr.subFiles {
+					if file.name == name {
+						found = true
+						break
+					}
+				}
+				if found {
+					// new directory's name conflicts with an existing file
+					failed = true
+					break
+				}
+				// create a new directory
+				newDir := &Directory{
+					name:   name,
+					parent: curr,
+				}
+				curr.subDirectories = append(curr.subDirectories, curr)
+				curr = newDir
+			}
+		}
+		if failed {
+			success = append(success, false)
+			continue
+		}
+		// check if fileName conflicts with existing files or directories
+		for _, dir := range curr.subDirectories {
+			if dir.name == fileName {
+				failed = true
+				break
+			}
+		}
+		for _, file := range curr.subFiles {
+			if file.name == fileName {
+				failed = true
+				break
+			}
+		}
+		if failed {
+			success = append(success, false)
+			continue
+		}
+		// register the file
+		curr.subFiles = append(curr.subFiles, file)
+		file.parent = curr
+		success = append(success, true)
+	}
+	return success
 }
