@@ -43,6 +43,11 @@ func (s *StorageServer) Start() {
 		log.Printf("Storage server command interface listening on port %d\n", s.commandPort)
 		http.ListenAndServe(fmt.Sprintf(":%d", s.commandPort), nil)
 	}()
+
+	// Call the register function to initiate the registration process
+    if err := s.register(); err != nil {
+        log.Fatalf("Failed to register with the naming server: %v", err)
+    }
 }
 
 func (s *StorageServer) registerHandlers() {
@@ -67,6 +72,35 @@ func isDirEmpty(name string) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+func (s *StorageServer) pruneEmptyDirs(dir string) error {
+    entries, err := os.ReadDir(dir)
+    if err != nil {
+        return err
+    }
+
+    for _, entry := range entries {
+        if entry.IsDir() {
+            subdir := filepath.Join(dir, entry.Name())
+            if err := s.pruneEmptyDirs(subdir); err != nil {
+                return err
+            }
+        }
+    }
+
+    entries, err = os.ReadDir(dir)
+    if err != nil {
+        return err
+    }
+
+    if len(entries) == 0 && dir != s.directory {
+        if err := os.Remove(dir); err != nil {
+            return err
+        }
+    }
+
+    return nil
 }
 
 // handleRead handles the HTTP request for reading data from a file.
@@ -196,35 +230,32 @@ func (s *StorageServer) handleDelete(req map[string]any) (int, map[string]any) {
 // It takes the file path as a parameter in the request body.
 // It creates a new file at the specified path on the storage server.
 func (s *StorageServer) handleCreate(req map[string]any) (int, map[string]any) {
-	path, ok := req["path"].(string)
-	if !ok {
-		return http.StatusBadRequest, map[string]any{"success": false}
-	}
+    path, ok := req["path"].(string)
+    if !ok {
+        return http.StatusBadRequest, map[string]any{"success": false}
+    }
 
-	if path == "/" {
-		return http.StatusBadRequest, map[string]any{"success": false}
-	}
+    if path == "/" {
+        return http.StatusBadRequest, map[string]any{"success": false}
+    }
 
-	filePath := filepath.Join(s.directory, path)
-	if fileInfo, err := os.Stat(filePath); err == nil {
-		if fileInfo.IsDir() {
-			return http.StatusBadRequest, map[string]any{"success": false}
-		}
-		return http.StatusConflict, map[string]any{"success": false}
-	}
+    filePath := filepath.Join(s.directory, path)
+    if _, err := os.Stat(filePath); err == nil {
+        return http.StatusConflict, map[string]any{"success": false}
+    }
 
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		return http.StatusInternalServerError, map[string]any{"success": false}
-	}
+    dir := filepath.Dir(filePath)
+    if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+        return http.StatusInternalServerError, map[string]any{"success": false}
+    }
 
-	file, err := os.Create(filePath)
-	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"success": false}
-	}
-	defer file.Close()
+    file, err := os.Create(filePath)
+    if err != nil {
+        return http.StatusInternalServerError, map[string]any{"success": false}
+    }
+    defer file.Close()
 
-	return http.StatusOK, map[string]any{"success": true}
+    return http.StatusOK, map[string]any{"success": true}
 }
 
 // handleCopy handles the HTTP request for copying a file from another storage server.
@@ -328,22 +359,28 @@ func (s *StorageServer) register() error {
 		return fmt.Errorf("registration failed with status code %d", resp.StatusCode)
 	}
 
-	var filesReturn struct {
-		Files []string `json:"files"`
-	}
-	err = json.NewDecoder(resp.Body).Decode(&filesReturn)
-	if err != nil {
-		return err
-	}
+    var filesReturn struct {
+        Files []string `json:"files"`
+    }
+    err = json.NewDecoder(resp.Body).Decode(&filesReturn)
+    if err != nil {
+        return err
+    }
 
-	for _, file := range filesReturn.Files {
-		err := os.Remove(filepath.Join(s.directory, file))
-		if err != nil {
-			log.Printf("Failed to remove file %s: %v", file, err)
-		}
-	}
+    for _, file := range filesReturn.Files {
+        err := os.RemoveAll(filepath.Join(s.directory, file))
+        if err != nil {
+            log.Printf("Failed to remove file %s: %v", file, err)
+        }
+    }
 
-	return nil
+    // Prune empty directories recursively
+    err = s.pruneEmptyDirs(s.directory)
+    if err != nil {
+        log.Printf("Failed to prune empty directories: %v", err)
+    }
+
+    return nil
 }
 
 func (s *StorageServer) listFiles() ([]string, error) {
