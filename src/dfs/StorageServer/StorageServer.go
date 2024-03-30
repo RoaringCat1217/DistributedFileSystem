@@ -20,9 +20,14 @@ type StorageServer struct {
 	commandPort    int
 	httpAPIBuilder *HttpUtils.HttpAPIBuilder
 	mutex          sync.Mutex
+	writeAheadLog *os.File
 }
 
 func NewStorageServer(directory string, namingServer string, clientPort int, commandPort int) *StorageServer {
+	writeAheadLog, err := os.OpenFile(filepath.Join(directory, "write_ahead.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    if err != nil {
+        log.Fatalf("Failed to create write-ahead log: %v", err)
+    }
 	return &StorageServer{
 		directory:      directory,
 		namingServer:   namingServer,
@@ -44,7 +49,6 @@ func (s *StorageServer) Start() {
 		http.ListenAndServe(fmt.Sprintf(":%d", s.commandPort), nil)
 	}()
 
-	// Call the register function to initiate the registration process
     if err := s.register(); err != nil {
         log.Fatalf("Failed to register with the naming server: %v", err)
     }
@@ -57,6 +61,13 @@ func (s *StorageServer) registerHandlers() {
 	s.httpAPIBuilder.RegisterHandler("/storage_create", "POST", s.handleCreate)
 	s.httpAPIBuilder.RegisterHandler("/storage_copy", "POST", s.handleCopy)
 	s.httpAPIBuilder.RegisterHandler("/storage_size", "POST", s.handleSize)
+}
+
+func (s *StorageServer) logOperation(operation string, path string) {
+    _, err := fmt.Fprintf(s.writeAheadLog, "%s,%s\n", operation, path)
+    if err != nil {
+        log.Printf("Failed to log operation: %v", err)
+    }
 }
 
 // isDirEmpty checks if a directory is empty.
@@ -120,14 +131,16 @@ func (s *StorageServer) handleRead(req map[string]any) (int, map[string]any) {
 		return http.StatusBadRequest, map[string]any{"exception_type": "IllegalArgumentException"}
 	}
 
+	s.mutex.RLock()
+    defer s.mutex.RUnlock()
 	filePath := filepath.Join(s.directory, path)
 	fileInfo, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		return http.StatusNotFound, map[string]any{"exception_type": "FileNotFoundException"}
-	}
-	if fileInfo.IsDir() {
-		return http.StatusBadRequest, map[string]any{"exception_type": "FileNotFoundException"}
-	}
+    if os.IsNotExist(err) {
+        return http.StatusNotFound, map[string]any{"success": false, "error": "file not found"}
+    }
+    if fileInfo.IsDir() {
+        return http.StatusBadRequest, map[string]any{"success": false, "error": "cannot read a directory"}
+    }
 
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -166,14 +179,16 @@ func (s *StorageServer) handleWrite(req map[string]any) (int, map[string]any) {
 		return http.StatusBadRequest, map[string]any{"exception_type": "IllegalArgumentException"}
 	}
 
+	s.mutex.Lock()
+    defer s.mutex.Unlock()
 	filePath := filepath.Join(s.directory, path)
 	fileInfo, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		return http.StatusNotFound, map[string]any{"exception_type": "FileNotFoundException"}
-	}
-	if fileInfo.IsDir() {
-		return http.StatusBadRequest, map[string]any{"exception_type": "FileNotFoundException"}
-	}
+    if os.IsNotExist(err) {
+        return http.StatusNotFound, map[string]any{"success": false, "error": "file not found"}
+    }
+    if fileInfo.IsDir() {
+        return http.StatusBadRequest, map[string]any{"success": false, "error": "cannot write to a directory"}
+    }
 
 	file, err := os.OpenFile(filePath, os.O_WRONLY, 0644)
 	if err != nil {
@@ -203,6 +218,8 @@ func (s *StorageServer) handleDelete(req map[string]any) (int, map[string]any) {
 		return http.StatusBadRequest, map[string]any{"exception_type": "IllegalArgumentException"}
 	}
 
+	s.mutex.Lock()
+    defer s.mutex.Unlock()
 	filePath := filepath.Join(s.directory, path)
 	err := os.RemoveAll(filePath)
 	if err != nil {
@@ -239,17 +256,20 @@ func (s *StorageServer) handleCreate(req map[string]any) (int, map[string]any) {
         return http.StatusBadRequest, map[string]any{"success": false}
     }
 
+	s.mutex.Lock()
+    defer s.mutex.Unlock()
     filePath := filepath.Join(s.directory, path)
     if _, err := os.Stat(filePath); err == nil {
         return http.StatusConflict, map[string]any{"success": false}
     }
 
     dir := filepath.Dir(filePath)
-    if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-        return http.StatusInternalServerError, map[string]any{"success": false}
+    if err := os.MkdirAll(dir, 0755); err != nil {
+        return http.StatusInternalServerError, map[string]any{"success": false, "error": "failed to create parent directories"}
     }
 
-    file, err := os.Create(filePath)
+    file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	s.logOperation("create", path)
     if err != nil {
         return http.StatusInternalServerError, map[string]any{"success": false}
     }
@@ -296,6 +316,8 @@ func (s *StorageServer) handleCopy(req map[string]any) (int, map[string]any) {
 		return http.StatusInternalServerError, map[string]any{"success": false}
 	}
 
+	s.mutex.Lock()
+    defer s.mutex.Unlock()
 	filePath := filepath.Join(s.directory, path)
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
@@ -318,6 +340,8 @@ func (s *StorageServer) handleSize(req map[string]any) (int, map[string]any) {
 		return http.StatusBadRequest, map[string]any{"exception_type": "IllegalArgumentException"}
 	}
 
+	s.mutex.RLock()
+    defer s.mutex.RUnlock()
 	filePath := filepath.Join(s.directory, path)
 	fileInfo, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
@@ -332,7 +356,10 @@ func (s *StorageServer) handleSize(req map[string]any) (int, map[string]any) {
 }
 
 func (s *StorageServer) register() error {
-	files, err := s.listFiles()
+	s.mutex.RLock()
+    files, err := s.listFiles()
+    s.mutex.RUnlock()
+
 	if err != nil {
 		return err
 	}
@@ -374,7 +401,6 @@ func (s *StorageServer) register() error {
         }
     }
 
-    // Prune empty directories recursively
     err = s.pruneEmptyDirs(s.directory)
     if err != nil {
         log.Printf("Failed to prune empty directories: %v", err)
@@ -385,6 +411,9 @@ func (s *StorageServer) register() error {
 
 func (s *StorageServer) listFiles() ([]string, error) {
 	var files []string
+	s.mutex.RLock()
+    defer s.mutex.RUnlock()
+	
 	err := filepath.Walk(s.directory, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
