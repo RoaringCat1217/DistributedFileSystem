@@ -1,7 +1,6 @@
 package StorageServer
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,7 +21,6 @@ type StorageServer struct {
 	commandPort  int
 	service      *gin.Engine
 	mutex        sync.RWMutex
-	root         *Directory
 }
 
 func NewStorageServer(directory string, namingServer string, clientPort int, commandPort int) *StorageServer {
@@ -42,22 +40,7 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 	storageServer.service.POST("/storage_copy", storageServer.handleCopy)
 	storageServer.service.POST("/storage_size", storageServer.handleSize)
 
-	storageServer.root = &Directory{
-		name: "",
-	}
-
-	// Load metadata from file
-	err := storageServer.root.LoadMetadata(directory)
-	if err != nil {
-		log.Printf("Failed to load metadata: %v", err)
-	}
-
 	return storageServer
-}
-
-// Error method makes DFSException compatible with the error interface.
-func (e *DFSException) Error() string {
-	return fmt.Sprintf("%s: %s", e.Type, e.Msg)
 }
 
 func (s *StorageServer) Start() {
@@ -110,7 +93,7 @@ func (s *StorageServer) pruneEmptyDirs(dir string) error {
 	return nil
 }
 
-// handleRead handles the request for reading data from a file.
+// handleRead handles the HTTP request for reading data from a file.
 func (s *StorageServer) handleRead(ctx *gin.Context) {
 	var request ReadRequest
 	if err := ctx.BindJSON(&request); err != nil {
@@ -159,7 +142,7 @@ func (s *StorageServer) handleRead(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, map[string]any{"data": string(data)})
 }
 
-// handleWrite handles the request for writing data to a file.
+// handleWrite handles the HTTP request for writing data to a file.
 func (s *StorageServer) handleWrite(ctx *gin.Context) {
 	var request WriteRequest
 	if err := ctx.BindJSON(&request); err != nil {
@@ -218,9 +201,10 @@ func (s *StorageServer) handleDelete(ctx *gin.Context) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	hash, err := s.root.GetFileHash(request.Path)
+	filePath := filepath.Join(s.directory, request.Path)
+	err := os.RemoveAll(filePath)
 	if err != nil {
-		if err.Type == FileNotFoundException {
+		if os.IsNotExist(err) {
 			ctx.JSON(http.StatusNotFound, map[string]any{"success": false})
 		} else {
 			ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
@@ -228,32 +212,17 @@ func (s *StorageServer) handleDelete(ctx *gin.Context) {
 		return
 	}
 
-	filePath := filepath.Join(s.directory, hash)
-	err2 := os.RemoveAll(filePath)
-	if err2 != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
-	}
-
-	err = s.root.DeleteFile(request.Path)
+	// Remove empty parent directories recursively
+	parentDir := filepath.Dir(filePath)
+	err = s.pruneEmptyDirs(parentDir)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
-	}
-
-	// Save metadata to file
-	err = s.root.SaveMetadata(s.directory)
-	if err != nil {
-		// Handle the error, perhaps log it, or wrap it in a HTTP response
-		ctx.JSON(http.StatusInternalServerError, map[string]interface{}{
-			"error": err.Error(),
-		})
-		return
+		log.Printf("Failed to prune empty directories: %v", err)
 	}
 
 	ctx.JSON(http.StatusOK, map[string]any{"success": true})
 }
 
+// handleCreate handles the HTTP request for creating a new file.
 func (s *StorageServer) handleCreate(ctx *gin.Context) {
 	var request CreateRequest
 	if err := ctx.BindJSON(&request); err != nil {
@@ -269,20 +238,19 @@ func (s *StorageServer) handleCreate(ctx *gin.Context) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	hash := generateHash(request.Path)
-	err := s.root.CreateFile(request.Path, hash)
+	filePath := filepath.Join(s.directory, request.Path)
+	dir := filepath.Dir(filePath)
+	err := os.MkdirAll(dir, 0755)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false, "error": err.Msg})
+		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false, "error": "failed to create parent directories"})
 		return
 	}
 
-	filePath := filepath.Join(s.directory, hash)
-	file, err1 := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err1 != nil {
-		ctx.JSON(http.StatusInternalServerError, DFSException{Type: "IOException", Msg: err.Error()})
+	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
 		return
 	}
-
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
@@ -290,16 +258,10 @@ func (s *StorageServer) handleCreate(ctx *gin.Context) {
 		}
 	}(file)
 
-	// Save metadata to file
-	err = s.root.SaveMetadata(s.directory)
-	if err != nil {
-		log.Printf("Failed to save metadata: %v", err)
-	}
-
 	ctx.JSON(http.StatusOK, map[string]any{"success": true})
 }
 
-// handleCopy handles the request for copying a file from another storage server.
+// handleCopy handles the HTTP request for copying a file from another storage server.
 func (s *StorageServer) handleCopy(ctx *gin.Context) {
 	var request CopyRequest
 	if err := ctx.BindJSON(&request); err != nil {
@@ -424,7 +386,8 @@ func (s *StorageServer) register() error {
 	}
 
 	for _, file := range filesReturn.Files {
-		err := os.RemoveAll(filepath.Join(s.directory, file))
+		filePath := filepath.Join(s.directory, file)
+		err = os.RemoveAll(filePath)
 		if err != nil {
 			log.Printf("Failed to remove file %s: %v", file, err)
 		}
@@ -460,9 +423,4 @@ func (s *StorageServer) listFiles() ([]string, error) {
 		return nil, err
 	}
 	return files, nil
-}
-
-func generateHash(path string) string {
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(path)))
-	return hash
 }
