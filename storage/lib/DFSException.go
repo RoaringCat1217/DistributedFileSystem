@@ -1,4 +1,4 @@
-package storage
+package StorageServer
 
 const IllegalArgumentException = "IllegalArgumentException"
 const FileNotFoundException = "FileNotFoundException"

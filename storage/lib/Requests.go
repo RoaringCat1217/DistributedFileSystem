@@ -1,4 +1,4 @@
-package storage
+package StorageServer
 
 type ReadRequest struct {
 	Path   string  `json:"path" binding:"required"`

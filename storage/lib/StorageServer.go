@@ -1,4 +1,4 @@
-package storage
+package StorageServer
 
 import (
 	"encoding/json"
@@ -106,11 +106,11 @@ func (s *StorageServer) handleRead(ctx *gin.Context) {
 	filePath := filepath.Join(s.directory, request.Path)
 	fileInfo, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
-		ctx.JSON(http.StatusNotFound, map[string]any{"success": false, "error": "file not found"})
+		ctx.JSON(http.StatusNotFound, DFSException{Type: FileNotFoundException, Msg: "file not found"})
 		return
 	}
 	if fileInfo.IsDir() {
-		ctx.JSON(http.StatusBadRequest, map[string]any{"success": false, "error": "cannot read a directory"})
+		ctx.JSON(http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot read a directory"})
 		return
 	}
 
@@ -155,11 +155,11 @@ func (s *StorageServer) handleWrite(ctx *gin.Context) {
 	filePath := filepath.Join(s.directory, request.Path)
 	fileInfo, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
-		ctx.JSON(http.StatusNotFound, map[string]any{"success": false, "error": "file not found"})
+		ctx.JSON(http.StatusNotFound, DFSException{Type: FileNotFoundException, Msg: "file not found"})
 		return
 	}
 	if fileInfo.IsDir() {
-		ctx.JSON(http.StatusBadRequest, map[string]any{"success": false, "error": "cannot write to a directory"})
+		ctx.JSON(http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot write to a directory"})
 		return
 	}
 
@@ -205,7 +205,8 @@ func (s *StorageServer) handleDelete(ctx *gin.Context) {
 	err := os.RemoveAll(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			ctx.JSON(http.StatusNotFound, map[string]any{"success": false})
+			ctx.JSON(http.StatusNotFound, DFSException{Type: FileNotFoundException})
+			return
 		} else {
 			ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
 		}
@@ -329,11 +330,11 @@ func (s *StorageServer) handleSize(ctx *gin.Context) {
 	filePath := filepath.Join(s.directory, request.Path)
 	fileInfo, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
-		ctx.JSON(http.StatusNotFound, DFSException{Type: "FileNotFoundException"})
+		ctx.JSON(http.StatusNotFound, DFSException{Type: FileNotFoundException})
 		return
 	}
 	if fileInfo.IsDir() {
-		ctx.JSON(http.StatusBadRequest, DFSException{Type: "FileNotFoundException"})
+		ctx.JSON(http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot get size of a directory"})
 		return
 	}
 
