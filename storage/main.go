@@ -10,7 +10,7 @@ import (
 
 func main() {
 	if len(os.Args) != 5 {
-		fmt.Println("Usage: ./storage_server <directory> <naming_server> <client_port> <command_port>")
+		fmt.Println("Wrong number of arguments")
 		os.Exit(-1)
 	}
 

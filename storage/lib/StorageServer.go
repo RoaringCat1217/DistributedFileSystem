@@ -47,7 +47,7 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 			ctx.JSON(http.StatusBadRequest, nil)
 			return
 		}
-		statusCode, response := storageServer.handleRead(ctx, request)
+		statusCode, response := storageServer.handleRead(request)
 		ctx.JSON(statusCode, response)
 	})
 	storageServer.service.POST("/storage_write", func(ctx *gin.Context) {
@@ -56,7 +56,7 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 			ctx.JSON(http.StatusBadRequest, nil)
 			return
 		}
-		statusCode, response := storageServer.handleWrite(ctx, request)
+		statusCode, response := storageServer.handleWrite(request)
 		ctx.JSON(statusCode, response)
 	})
 	storageServer.service.POST("/storage_size", func(ctx *gin.Context) {
@@ -65,7 +65,7 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 			ctx.JSON(http.StatusBadRequest, nil)
 			return
 		}
-		statusCode, response := storageServer.handleSize(ctx, request)
+		statusCode, response := storageServer.handleSize(request)
 		ctx.JSON(statusCode, response)
 	})
 
@@ -76,7 +76,7 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 			ctx.JSON(http.StatusBadRequest, nil)
 			return
 		}
-		statusCode, response := storageServer.handleCreate(ctx, request)
+		statusCode, response := storageServer.handleCreate(request)
 		ctx.JSON(statusCode, response)
 	})
 	storageServer.service.POST("/storage_delete", func(ctx *gin.Context) {
@@ -85,7 +85,7 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 			ctx.JSON(http.StatusBadRequest, nil)
 			return
 		}
-		statusCode, response := storageServer.handleDelete(ctx, request)
+		statusCode, response := storageServer.handleDelete(request)
 		ctx.JSON(statusCode, response)
 	})
 	storageServer.service.POST("/storage_copy", func(ctx *gin.Context) {
@@ -94,10 +94,9 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 			ctx.JSON(http.StatusBadRequest, nil)
 			return
 		}
-		statusCode, response := storageServer.handleCopy(ctx, request)
+		statusCode, response := storageServer.handleCopy(request)
 		ctx.JSON(statusCode, response)
 	})
-
 	return storageServer
 }
 
@@ -116,7 +115,6 @@ func (s *StorageServer) Start() {
 			return
 		}
 	}()
-
 	if err := s.register(); err != nil {
 		log.Fatalf("Failed to register with the naming server: %v", err)
 	}
@@ -127,7 +125,6 @@ func (s *StorageServer) pruneEmptyDirs(dir string) error {
 	if err != nil {
 		return err
 	}
-
 	for _, entry := range entries {
 		if entry.IsDir() {
 			subdir := filepath.Join(dir, entry.Name())
@@ -136,12 +133,10 @@ func (s *StorageServer) pruneEmptyDirs(dir string) error {
 			}
 		}
 	}
-
 	entries, err = os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
-
 	if len(entries) == 0 && dir != s.directory {
 		if err := os.Remove(dir); err != nil {
 			return err
@@ -152,7 +147,7 @@ func (s *StorageServer) pruneEmptyDirs(dir string) error {
 }
 
 // handleRead handles the HTTP request for reading data from a file.
-func (s *StorageServer) handleRead(ctx *gin.Context, request ReadRequest) (int, any) {
+func (s *StorageServer) handleRead(request ReadRequest) (int, any) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	filePath := filepath.Join(s.directory, request.Path)
@@ -190,7 +185,7 @@ func (s *StorageServer) handleRead(ctx *gin.Context, request ReadRequest) (int, 
 }
 
 // handleWrite handles the HTTP request for writing data to a file.
-func (s *StorageServer) handleWrite(ctx *gin.Context, request WriteRequest) (int, any) {
+func (s *StorageServer) handleWrite(request WriteRequest) (int, any) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	filePath := filepath.Join(s.directory, request.Path)
@@ -227,7 +222,7 @@ func (s *StorageServer) handleWrite(ctx *gin.Context, request WriteRequest) (int
 }
 
 // handleSize handles the HTTP request for retrieving the size of a file.
-func (s *StorageServer) handleSize(ctx *gin.Context, request SizeRequest) (int, any) {
+func (s *StorageServer) handleSize(request SizeRequest) (int, any) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	filePath := filepath.Join(s.directory, request.Path)
@@ -244,7 +239,7 @@ func (s *StorageServer) handleSize(ctx *gin.Context, request SizeRequest) (int, 
 }
 
 // handleCreate handles the HTTP request for creating a new file.
-func (s *StorageServer) handleCreate(ctx *gin.Context, request CreateRequest) (int, any) {
+func (s *StorageServer) handleCreate(request CreateRequest) (int, any) {
 	if request.Path == "/" {
 		return http.StatusBadRequest, DFSException{Type: IllegalArgumentException, Msg: "Path is invalid"}
 	}
@@ -274,7 +269,7 @@ func (s *StorageServer) handleCreate(ctx *gin.Context, request CreateRequest) (i
 }
 
 // handleDelete handles the HTTP request for deleting a file.
-func (s *StorageServer) handleDelete(ctx *gin.Context, request DeleteRequest) (int, any) {
+func (s *StorageServer) handleDelete(request DeleteRequest) (int, any) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -299,7 +294,7 @@ func (s *StorageServer) handleDelete(ctx *gin.Context, request DeleteRequest) (i
 }
 
 // handleCopy handles the HTTP request for copying a file from another storage server.
-func (s *StorageServer) handleCopy(ctx *gin.Context, request CopyRequest) (int, any) {
+func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
 	sourceURL := fmt.Sprintf("http://%s:%d/storage_read", request.SourceAddr, int(request.SourcePort))
 	resp, err := http.Post(sourceURL, "application/json", strings.NewReader(fmt.Sprintf(`{"path":"%s","offset":0,"length":-1}`, request.Path)))
 	if err != nil {
