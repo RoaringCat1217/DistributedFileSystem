@@ -1,3 +1,0 @@
-package StorageServer
-
-func main() {}
