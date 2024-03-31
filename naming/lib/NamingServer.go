@@ -18,22 +18,26 @@ type StorageServerInfo struct {
 }
 
 type NamingServer struct {
-	port    int
-	service *gin.Engine
-	root    *Directory
+	servicePort      int
+	registrationPort int
+	service          *gin.Engine
+	registration     *gin.Engine
+	root             *Directory
 	// fields that need locking before access
 	storageServers []*StorageServerInfo
 	lock           sync.RWMutex
 }
 
-func NewNamingServer(port int) *NamingServer {
+func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 	namingServer := NamingServer{
-		port: port,
+		servicePort:      servicePort,
+		registrationPort: registrationPort,
 		root: &Directory{
 			name:   "",
 			parent: nil,
 		},
-		service: gin.Default(),
+		service:      gin.Default(),
+		registration: gin.Default(),
 	}
 
 	// register client APIs
@@ -84,7 +88,7 @@ func NewNamingServer(port int) *NamingServer {
 	})
 
 	// register registration API
-	namingServer.service.POST("/register", func(ctx *gin.Context) {
+	namingServer.registration.POST("/register", func(ctx *gin.Context) {
 		var request RegisterRequest
 		if err := ctx.BindJSON(&request); err != nil {
 			ctx.JSON(http.StatusBadRequest, nil)
@@ -94,6 +98,21 @@ func NewNamingServer(port int) *NamingServer {
 		ctx.JSON(statusCode, response)
 	})
 	return &namingServer
+}
+
+func (s *NamingServer) Run() {
+	chanErr := make(chan error)
+	go func() {
+		err := s.service.Run(fmt.Sprintf("localhost:%d", s.servicePort))
+		chanErr <- err
+	}()
+	go func() {
+		err := s.registration.Run(fmt.Sprintf("localhost:%d", s.registrationPort))
+		chanErr <- err
+	}()
+
+	err := <-chanErr
+	fmt.Println(err.Error())
 }
 
 // handlers for client APIs
