@@ -1,15 +1,11 @@
 package naming
 
 type PathRequest struct {
-	Path string `json:"path" binding:"required"`
-}
-
-type GetStorageRequest struct {
-	Path string `json:"path" binding:"required"`
+	Path string `json:"path"`
 }
 
 type LockRequest struct {
-	Path      string `json:"path" binding:"required"`
+	Path      string `json:"path"`
 	Exclusive bool   `json:"exclusive" binding:"required"`
 }
 

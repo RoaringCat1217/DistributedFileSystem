@@ -184,7 +184,7 @@ func (s *NamingServer) registerStorageHandler(body RegisterRequest) (int, any) {
 	for _, server := range s.storageServers {
 		if server.clientPort == body.ClientPort && server.commandPort == body.CommandPort {
 			// already registered
-			ex := DFSException{IllegalArgumentException, "This storage server is already registered."}
+			ex := DFSException{IllegalStateException, "This storage server is already registered."}
 			return http.StatusConflict, ex
 		}
 	}
@@ -193,18 +193,8 @@ func (s *NamingServer) registerStorageHandler(body RegisterRequest) (int, any) {
 		commandPort: body.CommandPort,
 	}
 	s.storageServers = append(s.storageServers, server)
-	// create new files
-	files := make([]*FileInfo, 0)
-	for _, fileName := range body.Files {
-		file := FileInfo{
-			name:          fileName,
-			parent:        nil,
-			storageServer: server,
-		}
-		files = append(files, &file)
-	}
 	// register all of its files
-	success := s.root.RegisterFiles(body.Files, files)
+	success := s.root.RegisterFiles(body.Files, server)
 	response := make(map[string][]string)
 	response["files"] = make([]string, 0)
 	for i := range success {

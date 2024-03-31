@@ -300,7 +300,7 @@ func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
 	return deletedFiles, nil
 }
 
-func (d *Directory) RegisterFiles(pths []string, files []*FileInfo) []bool {
+func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInfo) []bool {
 	// lock the entire FS
 	d.lock.Lock()
 	defer d.lock.Unlock()
@@ -308,12 +308,18 @@ func (d *Directory) RegisterFiles(pths []string, files []*FileInfo) []bool {
 	success := make([]bool, 0)
 	for i := range pths {
 		pth := pths[i]
-		file := files[i]
 		names := pathToNames(pth)
 		if len(names) == 0 {
 			success = append(success, false)
 			continue
 		}
+		if len(names) == 1 {
+			// silently ignore "/" attempt
+			success = append(success, true)
+			continue
+		}
+		// ignore root directory
+		names = names[1:]
 		fileName := names[len(names)-1]
 		curr := d
 		failed := false
@@ -344,7 +350,7 @@ func (d *Directory) RegisterFiles(pths []string, files []*FileInfo) []bool {
 					name:   name,
 					parent: curr,
 				}
-				curr.subDirectories = append(curr.subDirectories, curr)
+				curr.subDirectories = append(curr.subDirectories, newDir)
 				curr = newDir
 			}
 		}
@@ -370,9 +376,13 @@ func (d *Directory) RegisterFiles(pths []string, files []*FileInfo) []bool {
 			continue
 		}
 		// register the file
+		file := &FileInfo{
+			name:          fileName,
+			path:          path.Clean(pth),
+			parent:        curr,
+			storageServer: storageServer,
+		}
 		curr.subFiles = append(curr.subFiles, file)
-		file.parent = curr
-		file.path = path.Clean(pth)
 		success = append(success, true)
 	}
 	return success
