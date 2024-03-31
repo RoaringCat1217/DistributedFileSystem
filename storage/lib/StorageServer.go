@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+type RegisterRequest struct {
+	StorageIP   string   `json:"storage_ip"`
+	ClientPort  int      `json:"client_port"`
+	CommandPort int      `json:"command_port"`
+	Files       []string `json:"files"`
+}
 
 type StorageServer struct {
 	directory    string
@@ -32,13 +40,63 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 		service:      gin.Default(),
 	}
 
-	// Register APIs
-	storageServer.service.POST("/storage_read", storageServer.handleRead)
-	storageServer.service.POST("/storage_write", storageServer.handleWrite)
-	storageServer.service.POST("/storage_delete", storageServer.handleDelete)
-	storageServer.service.POST("/storage_create", storageServer.handleCreate)
-	storageServer.service.POST("/storage_copy", storageServer.handleCopy)
-	storageServer.service.POST("/storage_size", storageServer.handleSize)
+	// Register client APIs
+	storageServer.service.POST("/storage_read", func(ctx *gin.Context) {
+		var request ReadRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := storageServer.handleRead(ctx, request)
+		ctx.JSON(statusCode, response)
+	})
+	storageServer.service.POST("/storage_write", func(ctx *gin.Context) {
+		var request WriteRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := storageServer.handleWrite(ctx, request)
+		ctx.JSON(statusCode, response)
+	})
+	storageServer.service.POST("/storage_size", func(ctx *gin.Context) {
+		var request SizeRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := storageServer.handleSize(ctx, request)
+		ctx.JSON(statusCode, response)
+	})
+
+	// Register command APIs
+	storageServer.service.POST("/storage_create", func(ctx *gin.Context) {
+		var request CreateRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := storageServer.handleCreate(ctx, request)
+		ctx.JSON(statusCode, response)
+	})
+	storageServer.service.POST("/storage_delete", func(ctx *gin.Context) {
+		var request DeleteRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := storageServer.handleDelete(ctx, request)
+		ctx.JSON(statusCode, response)
+	})
+	storageServer.service.POST("/storage_copy", func(ctx *gin.Context) {
+		var request CopyRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := storageServer.handleCopy(ctx, request)
+		ctx.JSON(statusCode, response)
+	})
 
 	return storageServer
 }
@@ -94,30 +152,21 @@ func (s *StorageServer) pruneEmptyDirs(dir string) error {
 }
 
 // handleRead handles the HTTP request for reading data from a file.
-func (s *StorageServer) handleRead(ctx *gin.Context) {
-	var request ReadRequest
-	if err := ctx.BindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, DFSException{Type: IllegalArgumentException})
-		return
-	}
-
+func (s *StorageServer) handleRead(ctx *gin.Context, request ReadRequest) (int, any) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	filePath := filepath.Join(s.directory, request.Path)
 	fileInfo, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
-		ctx.JSON(http.StatusNotFound, map[string]any{"success": false, "error": "file not found"})
-		return
+		return http.StatusNotFound, DFSException{Type: FileNotFoundException, Msg: "file not found"}
 	}
 	if fileInfo.IsDir() {
-		ctx.JSON(http.StatusBadRequest, map[string]any{"success": false, "error": "cannot read a directory"})
-		return
+		return http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot read a directory"}
 	}
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, DFSException{Type: "IOException"})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 	defer func(file *os.File) {
 		err := file.Close()
@@ -128,45 +177,34 @@ func (s *StorageServer) handleRead(ctx *gin.Context) {
 
 	_, err = file.Seek(int64(request.Offset), io.SeekStart)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, DFSException{Type: "IOException"})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
 	data := make([]byte, int(request.Length))
 	_, err = file.Read(data)
 	if err != nil && err != io.EOF {
-		ctx.JSON(http.StatusInternalServerError, DFSException{Type: "IOException"})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
-	ctx.JSON(http.StatusOK, map[string]any{"data": string(data)})
+	return http.StatusOK, map[string]any{"data": string(data)}
 }
 
 // handleWrite handles the HTTP request for writing data to a file.
-func (s *StorageServer) handleWrite(ctx *gin.Context) {
-	var request WriteRequest
-	if err := ctx.BindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, DFSException{Type: IllegalArgumentException})
-		return
-	}
-
+func (s *StorageServer) handleWrite(ctx *gin.Context, request WriteRequest) (int, any) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	filePath := filepath.Join(s.directory, request.Path)
 	fileInfo, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
-		ctx.JSON(http.StatusNotFound, map[string]any{"success": false, "error": "file not found"})
-		return
+		return http.StatusNotFound, DFSException{Type: FileNotFoundException, Msg: "file not found"}
 	}
 	if fileInfo.IsDir() {
-		ctx.JSON(http.StatusBadRequest, map[string]any{"success": false, "error": "cannot write to a directory"})
-		return
+		return http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot write to a directory"}
 	}
 
 	file, err := os.OpenFile(filePath, os.O_WRONLY, 0644)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, DFSException{Type: "IOException"})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 	defer func(file *os.File) {
 		err := file.Close()
@@ -177,62 +215,38 @@ func (s *StorageServer) handleWrite(ctx *gin.Context) {
 
 	_, err = file.Seek(int64(request.Offset), io.SeekStart)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, DFSException{Type: "IOException"})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
 	_, err = file.WriteString(request.Data)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, DFSException{Type: "IOException"})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
-	ctx.JSON(http.StatusOK, map[string]any{"success": true})
+	return http.StatusOK, map[string]any{"success": true}
 }
 
-// handleDelete handles the HTTP request for deleting a file.
-func (s *StorageServer) handleDelete(ctx *gin.Context) {
-	var request DeleteRequest
-	if err := ctx.BindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, DFSException{Type: IllegalArgumentException})
-		return
-	}
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
+// handleSize handles the HTTP request for retrieving the size of a file.
+func (s *StorageServer) handleSize(ctx *gin.Context, request SizeRequest) (int, any) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 	filePath := filepath.Join(s.directory, request.Path)
-	err := os.RemoveAll(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			ctx.JSON(http.StatusNotFound, map[string]any{"success": false})
-		} else {
-			ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		}
-		return
+	fileInfo, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		return http.StatusNotFound, DFSException{Type: FileNotFoundException}
+	}
+	if fileInfo.IsDir() {
+		return http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot get size of a directory"}
 	}
 
-	// Remove empty parent directories recursively
-	parentDir := filepath.Dir(filePath)
-	err = s.pruneEmptyDirs(parentDir)
-	if err != nil {
-		log.Printf("Failed to prune empty directories: %v", err)
-	}
-
-	ctx.JSON(http.StatusOK, map[string]any{"success": true})
+	size := fileInfo.Size()
+	return http.StatusOK, map[string]any{"size": size}
 }
 
 // handleCreate handles the HTTP request for creating a new file.
-func (s *StorageServer) handleCreate(ctx *gin.Context) {
-	var request CreateRequest
-	if err := ctx.BindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, map[string]any{"success": false})
-		return
-	}
-
+func (s *StorageServer) handleCreate(ctx *gin.Context, request CreateRequest) (int, any) {
 	if request.Path == "/" {
-		ctx.JSON(http.StatusBadRequest, map[string]any{"success": false})
-		return
+		return http.StatusBadRequest, DFSException{Type: IllegalArgumentException, Msg: "Path is invalid"}
 	}
 
 	s.mutex.Lock()
@@ -242,14 +256,12 @@ func (s *StorageServer) handleCreate(ctx *gin.Context) {
 	dir := filepath.Dir(filePath)
 	err := os.MkdirAll(dir, 0755)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false, "error": "failed to create parent directories"})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
 	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 	defer func(file *os.File) {
 		err := file.Close()
@@ -258,22 +270,40 @@ func (s *StorageServer) handleCreate(ctx *gin.Context) {
 		}
 	}(file)
 
-	ctx.JSON(http.StatusOK, map[string]any{"success": true})
+	return http.StatusOK, map[string]any{"success": true}
+}
+
+// handleDelete handles the HTTP request for deleting a file.
+func (s *StorageServer) handleDelete(ctx *gin.Context, request DeleteRequest) (int, any) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	filePath := filepath.Join(s.directory, request.Path)
+	err := os.RemoveAll(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return http.StatusNotFound, DFSException{Type: FileNotFoundException}
+		} else {
+			return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		}
+	}
+
+	// Remove empty parent directories recursively
+	parentDir := filepath.Dir(filePath)
+	err = s.pruneEmptyDirs(parentDir)
+	if err != nil {
+		log.Printf("Failed to prune empty directories: %v", err)
+	}
+
+	return http.StatusOK, map[string]any{"success": true}
 }
 
 // handleCopy handles the HTTP request for copying a file from another storage server.
-func (s *StorageServer) handleCopy(ctx *gin.Context) {
-	var request CopyRequest
-	if err := ctx.BindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, map[string]any{"success": false})
-		return
-	}
-
+func (s *StorageServer) handleCopy(ctx *gin.Context, request CopyRequest) (int, any) {
 	sourceURL := fmt.Sprintf("http://%s:%d/storage_read", request.SourceAddr, int(request.SourcePort))
 	resp, err := http.Post(sourceURL, "application/json", strings.NewReader(fmt.Sprintf(`{"path":"%s","offset":0,"length":-1}`, request.Path)))
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
@@ -283,20 +313,16 @@ func (s *StorageServer) handleCopy(ctx *gin.Context) {
 	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		ctx.JSON(resp.StatusCode, map[string]any{"success": false})
-		return
+		var exception DFSException
+		if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
+			return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		}
+		return resp.StatusCode, exception
 	}
 
-	var readResp map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&readResp); err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
-	}
-
-	data, ok := readResp["data"].(string)
-	if !ok {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
 	s.mutex.Lock()
@@ -304,41 +330,14 @@ func (s *StorageServer) handleCopy(ctx *gin.Context) {
 	filePath := filepath.Join(s.directory, request.Path)
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
-	if err := os.WriteFile(filePath, []byte(data), os.ModePerm); err != nil {
-		ctx.JSON(http.StatusInternalServerError, map[string]any{"success": false})
-		return
+	if err := os.WriteFile(filePath, data, os.ModePerm); err != nil {
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
-	ctx.JSON(http.StatusOK, map[string]any{"success": true})
-}
-
-// handleSize handles the HTTP request for retrieving the size of a file.
-func (s *StorageServer) handleSize(ctx *gin.Context) {
-	var request SizeRequest
-	if err := ctx.BindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, DFSException{Type: IllegalArgumentException})
-		return
-	}
-
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	filePath := filepath.Join(s.directory, request.Path)
-	fileInfo, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		ctx.JSON(http.StatusNotFound, DFSException{Type: "FileNotFoundException"})
-		return
-	}
-	if fileInfo.IsDir() {
-		ctx.JSON(http.StatusBadRequest, DFSException{Type: "FileNotFoundException"})
-		return
-	}
-
-	size := fileInfo.Size()
-	ctx.JSON(http.StatusOK, map[string]any{"size": size})
+	return http.StatusOK, map[string]any{"success": true}
 }
 
 func (s *StorageServer) register() error {
@@ -350,11 +349,11 @@ func (s *StorageServer) register() error {
 		return err
 	}
 
-	reqBody := map[string]any{
-		"storage_ip":   "127.0.0.1",
-		"client_port":  s.clientPort,
-		"command_port": s.commandPort,
-		"files":        files,
+	reqBody := RegisterRequest{
+		StorageIP:   "127.0.0.1",
+		ClientPort:  s.clientPort,
+		CommandPort: s.commandPort,
+		Files:       files,
 	}
 
 	reqBytes, err := json.Marshal(reqBody)
@@ -362,7 +361,7 @@ func (s *StorageServer) register() error {
 		return err
 	}
 
-	resp, err := http.Post(fmt.Sprintf("http://%s/register", s.namingServer), "application/json", strings.NewReader(string(reqBytes)))
+	resp, err := http.Post(fmt.Sprintf("http://%s/register", s.namingServer), "application/json", bytes.NewReader(reqBytes))
 	if err != nil {
 		return err
 	}
@@ -373,19 +372,28 @@ func (s *StorageServer) register() error {
 		}
 	}(resp.Body)
 
+	if resp.StatusCode == http.StatusConflict {
+		var exception DFSException
+		if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
+			return err
+		}
+		return fmt.Errorf("registration failed: %s", exception.Msg)
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("registration failed with status code %d", resp.StatusCode)
 	}
 
-	var filesReturn struct {
+	var response struct {
 		Files []string `json:"files"`
 	}
-	err = json.NewDecoder(resp.Body).Decode(&filesReturn)
+	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
 		return err
 	}
 
-	for _, file := range filesReturn.Files {
+	// Delete files that failed to register
+	for _, file := range response.Files {
 		filePath := filepath.Join(s.directory, file)
 		err = os.RemoveAll(filePath)
 		if err != nil {
@@ -393,6 +401,7 @@ func (s *StorageServer) register() error {
 		}
 	}
 
+	// Prune empty directories
 	err = s.pruneEmptyDirs(s.directory)
 	if err != nil {
 		log.Printf("Failed to prune empty directories: %v", err)
