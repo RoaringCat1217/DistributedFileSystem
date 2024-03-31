@@ -12,7 +12,10 @@ func pathToNames(pth string) []string {
 	if pth[0] != '/' {
 		return nil
 	}
-	return strings.Split(pth, "/")[1:]
+	if pth == "/" {
+		return []string{""}
+	}
+	return strings.Split(pth, "/")
 }
 
 type Directory struct {
@@ -25,22 +28,25 @@ type Directory struct {
 
 type FileInfo struct {
 	name          string
+	path          string
 	parent        *Directory
 	storageServer *StorageServerInfo
 }
 
 func (d *Directory) lockPath(names []string, readonly bool) *Directory {
 	if len(names) == 0 {
-		if readonly {
-			d.lock.RLock()
-		} else {
-			d.lock.Lock()
-		}
-		return d
+		return nil
 	}
-	curr := d
+	if names[0] != "" {
+		return nil
+	}
+	var curr *Directory = nil
 	final := names[len(names)-1]
 	for _, name := range names[:len(names)-1] {
+		if curr == nil {
+			curr = d
+			continue
+		}
 		curr.lock.RLock()
 		found := false
 		for _, dir := range curr.subDirectories {
@@ -57,6 +63,14 @@ func (d *Directory) lockPath(names []string, readonly bool) *Directory {
 		}
 	}
 	// curr is the parent of final
+	if curr == nil {
+		if readonly {
+			d.lock.RLock()
+		} else {
+			d.lock.Lock()
+		}
+		return d
+	}
 	curr.lock.RLock()
 	for _, dir := range curr.subDirectories {
 		if dir.name == final {
@@ -74,14 +88,18 @@ func (d *Directory) lockPath(names []string, readonly bool) *Directory {
 }
 
 func (d *Directory) unlockPath(dir *Directory, readonly bool) {
+	if dir == nil {
+		return
+	}
+	parent := dir.parent
 	if readonly {
 		dir.lock.RUnlock()
 	} else {
 		dir.lock.Unlock()
 	}
-	dir = dir.parent
+	dir = parent
 	for dir != nil {
-		parent := dir.parent
+		parent = dir.parent
 		dir.lock.RUnlock()
 		dir = parent
 	}
@@ -120,6 +138,9 @@ func (d *Directory) MakeDirectory(pth string) *DFSException {
 	names := pathToNames(pth)
 	if len(names) == 0 {
 		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+	}
+	if len(names) == 1 {
+		return &DFSException{IllegalArgumentException, "Cannot call MakeDirectory on root directory"}
 	}
 
 	// wlock parent directory
@@ -177,6 +198,67 @@ func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSExceptio
 		}
 	}
 	return nil, &DFSException{FileNotFoundException, fmt.Sprintf("cannot find file %s.", pth)}
+}
+
+func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
+	names := pathToNames(pth)
+	if len(names) == 0 {
+		return make([]*FileInfo, 0), &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+	}
+	if len(names) == 1 {
+		// cannot delete root directory
+		return make([]*FileInfo, 0), nil
+	}
+	deleted := names[len(names)-1]
+	parent := d.lockPath(names[:len(names)-1], false)
+	if parent == nil {
+		return make([]*FileInfo, 0), &DFSException{FileNotFoundException, fmt.Sprintf("path %s does not exist.", pth)}
+	}
+	defer d.unlockPath(parent, false)
+
+	// find the directory or file to be deleted
+	var deletedDir *Directory = nil
+	var deletedFiles []*FileInfo = nil
+	var index int
+	for i, dir := range parent.subDirectories {
+		if dir.name == deleted {
+			deletedDir = dir
+			index = i
+			break
+		}
+	}
+	for i, file := range parent.subFiles {
+		if file.name == deleted {
+			deletedFiles = append(deletedFiles, file)
+			index = i
+			break
+		}
+	}
+	if deletedDir == nil && deletedFiles == nil {
+		return make([]*FileInfo, 0), &DFSException{FileNotFoundException, fmt.Sprintf("path %s does not exist.", pth)}
+	}
+
+	// find all files to be deleted
+	var findDeletedFilesDFS func(*Directory)
+	findDeletedFilesDFS = func(currDir *Directory) {
+		if currDir == nil {
+			return
+		}
+		for _, file := range currDir.subFiles {
+			deletedFiles = append(deletedFiles, file)
+		}
+		for _, dir := range currDir.subDirectories {
+			findDeletedFilesDFS(dir)
+		}
+	}
+	findDeletedFilesDFS(deletedDir)
+
+	if deletedDir != nil {
+		parent.subDirectories = append(parent.subDirectories[:index], parent.subDirectories[index+1:]...)
+	} else {
+		parent.subFiles = append(parent.subFiles[:index], parent.subFiles[index+1:]...)
+	}
+	return deletedFiles, nil
 }
 
 func (d *Directory) RegisterFiles(pths []string, files []*FileInfo) []bool {
@@ -251,6 +333,7 @@ func (d *Directory) RegisterFiles(pths []string, files []*FileInfo) []bool {
 		// register the file
 		curr.subFiles = append(curr.subFiles, file)
 		file.parent = curr
+		file.path = path.Clean(pth)
 		success = append(success, true)
 	}
 	return success
