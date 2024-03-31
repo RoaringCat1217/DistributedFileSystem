@@ -15,6 +15,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type RegisterRequest struct {
+	StorageIP   string   `json:"storage_ip"`
+	ClientPort  int      `json:"client_port"`
+	CommandPort int      `json:"command_port"`
+	Files       []string `json:"files"`
+}
+
 type StorageServer struct {
 	directory    string
 	namingServer string
@@ -342,11 +349,11 @@ func (s *StorageServer) register() error {
 		return err
 	}
 
-	reqBody := map[string]any{
-		"storage_ip":   "127.0.0.1",
-		"client_port":  s.clientPort,
-		"command_port": s.commandPort,
-		"files":        files,
+	reqBody := RegisterRequest{
+		StorageIP:   "127.0.0.1",
+		ClientPort:  s.clientPort,
+		CommandPort: s.commandPort,
+		Files:       files,
 	}
 
 	reqBytes, err := json.Marshal(reqBody)
@@ -377,15 +384,16 @@ func (s *StorageServer) register() error {
 		return fmt.Errorf("registration failed with status code %d", resp.StatusCode)
 	}
 
-	var filesReturn struct {
+	var response struct {
 		Files []string `json:"files"`
 	}
-	err = json.NewDecoder(resp.Body).Decode(&filesReturn)
+	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
 		return err
 	}
 
-	for _, file := range filesReturn.Files {
+	// Delete files that failed to register
+	for _, file := range response.Files {
 		filePath := filepath.Join(s.directory, file)
 		err = os.RemoveAll(filePath)
 		if err != nil {
@@ -393,6 +401,7 @@ func (s *StorageServer) register() error {
 		}
 	}
 
+	// Prune empty directories
 	err = s.pruneEmptyDirs(s.directory)
 	if err != nil {
 		log.Printf("Failed to prune empty directories: %v", err)
