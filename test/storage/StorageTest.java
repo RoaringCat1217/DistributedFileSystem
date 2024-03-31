@@ -119,13 +119,13 @@ abstract class StorageTest extends Test {
         Socket storage_socket;
         Socket registration_socket;
 
-        try {
-            ProcessBuilder b = new ProcessBuilder(Arrays.asList(splits));
-            b.inheritIO();
-            server = b.start();
-        } catch (Throwable t) {
-            throw new TestFailed("unable to start first storage server");
-        }
+//        try {
+//            ProcessBuilder b = new ProcessBuilder(Arrays.asList(splits));
+//            b.inheritIO();
+//            server = b.start();
+//        } catch (Throwable t) {
+//            throw new TestFailed("unable to start first storage server");
+//        }
 
         // Attempt to make the connection.
         while (true) {
