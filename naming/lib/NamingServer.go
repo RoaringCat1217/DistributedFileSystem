@@ -86,6 +86,24 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 		statusCode, response := namingServer.createFileHandler(request)
 		ctx.JSON(statusCode, response)
 	})
+	namingServer.service.POST("/list", func(ctx *gin.Context) {
+		var request PathRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := namingServer.listDirHandler(request)
+		ctx.JSON(statusCode, response)
+	})
+	namingServer.service.POST("/is_directory", func(ctx *gin.Context) {
+		var request PathRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := namingServer.isDirectoryHandler(request)
+		ctx.JSON(statusCode, response)
+	})
 
 	// register registration API
 	namingServer.registration.POST("/register", func(ctx *gin.Context) {
@@ -117,8 +135,8 @@ func (s *NamingServer) Run() {
 
 // handlers for client APIs
 func (s *NamingServer) isValidPathHandler(body PathRequest) (int, any) {
-	success := s.root.PathExists(body.Path)
-	return http.StatusOK, SuccessResponse{success}
+	foundDir, foundFile, _ := s.root.PathExists(body.Path)
+	return http.StatusOK, SuccessResponse{foundDir || foundFile}
 }
 
 func (s *NamingServer) getStorageHandler(body PathRequest) (int, any) {
@@ -174,6 +192,26 @@ func (s *NamingServer) createFileHandler(body PathRequest) (int, any) {
 		return http.StatusNotFound, err
 	}
 	return http.StatusOK, SuccessResponse{true}
+}
+
+func (s *NamingServer) listDirHandler(body PathRequest) (int, any) {
+	files, err := s.root.ListDir(body.Path)
+	if err != nil {
+		return http.StatusNotFound, err
+	}
+	return http.StatusOK, ListFilesResponse{files}
+}
+
+func (s *NamingServer) isDirectoryHandler(body PathRequest) (int, any) {
+	foundDir, foundFile, err := s.root.PathExists(body.Path)
+	if err != nil {
+		return http.StatusNotFound, err
+	}
+	if !foundDir && !foundFile {
+		return http.StatusNotFound, &DFSException{FileNotFoundException, "the file/directory or parent directory does not exist."}
+	}
+
+	return http.StatusOK, SuccessResponse{foundDir}
 }
 
 // handler for registration API

@@ -39,7 +39,6 @@ public class ServerCommands {
      * Test code uses this String to start the first storage server as a new Process.
      * It also parses the command String to extract the various parameters needed to interact
      * with the storage server.
-     *
      * TODO: change this string to start your first storage server using the above specification.
      */
     public static final String storage0Command = "go run storage/main.go /tmp/dist-systems-0 localhost:8090 7000 7001";

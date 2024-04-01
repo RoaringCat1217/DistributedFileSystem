@@ -69,6 +69,7 @@ abstract class NamingTest extends Test {
         service_port = Integer.parseInt(splits[n - 2]);
         registration_port = Integer.parseInt(splits[n - 1]);
 
+        /*
         try {
             ProcessBuilder b = new ProcessBuilder(Arrays.asList(splits));
             b.inheritIO();
@@ -76,6 +77,7 @@ abstract class NamingTest extends Test {
         } catch (Throwable t) {
             throw new TestFailed("unable to start naming server");
         }
+        */
 
         // Attempt to make the connection.
         while (true) {

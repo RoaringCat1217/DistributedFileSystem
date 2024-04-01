@@ -105,33 +105,37 @@ func (d *Directory) unlockPath(dir *Directory, readonly bool) {
 	}
 }
 
-func (d *Directory) PathExists(pth string) bool {
+func (d *Directory) PathExists(pth string) (bool, bool, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
-		return false
+		return false, false, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+	}
+	if len(names) == 1 {
+		// pth is the root directory
+		return true, false, nil
 	}
 	parent := d.lockPath(names[:len(names)-1], true)
 	if parent == nil {
-		return false
+		return false, false, nil
 	}
 	defer d.unlockPath(parent, true)
 
 	itemName := names[len(names)-1]
-	// either a directory or a file is ok
-	found := false
+	foundDir := false
 	for _, dir := range parent.subDirectories {
 		if dir.name == itemName {
-			found = true
+			foundDir = true
 			break
 		}
 	}
+	foundFile := false
 	for _, file := range parent.subFiles {
 		if file.name == itemName {
-			found = true
+			foundFile = true
 			break
 		}
 	}
-	return found
+	return foundDir, foundFile, nil
 }
 
 func (d *Directory) MakeDirectory(pth string) *DFSException {
@@ -298,6 +302,26 @@ func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
 		parent.subFiles = append(parent.subFiles[:index], parent.subFiles[index+1:]...)
 	}
 	return deletedFiles, nil
+}
+
+func (d *Directory) ListDir(pth string) ([]string, *DFSException) {
+	names := pathToNames(pth)
+	if len(names) == 0 {
+		return nil, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+	}
+	dir := d.lockPath(names, true) // directory to be listed
+	if dir == nil {
+		return nil, &DFSException{FileNotFoundException, fmt.Sprintf("Cannot find directory %s.", pth)}
+	}
+	defer d.unlockPath(dir, true)
+	itemNames := make([]string, 0)
+	for _, file := range dir.subFiles {
+		itemNames = append(itemNames, file.name)
+	}
+	for _, subdir := range dir.subDirectories {
+		itemNames = append(itemNames, subdir.name)
+	}
+	return itemNames, nil
 }
 
 func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInfo) []bool {
