@@ -15,19 +15,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type RegisterRequest struct {
-	StorageIP   string   `json:"storage_ip"`
-	ClientPort  int      `json:"client_port"`
-	CommandPort int      `json:"command_port"`
-	Files       []string `json:"files"`
-}
-
 type StorageServer struct {
-	directory    string
-	clientPort   int
-	commandPort  int
-	service      *gin.Engine
-	mutex        sync.RWMutex
+	directory   string
+	clientPort  int
+	commandPort int
+	service     *gin.Engine
+	command     *gin.Engine
+	mutex       sync.RWMutex
 }
 
 func NewStorageServer(directory string, clientPort int, commandPort int) *StorageServer {
@@ -38,10 +32,11 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 	}
 
 	storageServer := &StorageServer{
-		directory:    directory,
-		clientPort:   clientPort,
-		commandPort:  commandPort,
-		service:      gin.Default(),
+		directory:   directory,
+		clientPort:  clientPort,
+		commandPort: commandPort,
+		service:     gin.Default(),
+		command:     gin.Default(),
 	}
 
 	// Register client APIs
@@ -74,7 +69,7 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 	})
 
 	// Register command APIs
-	storageServer.service.POST("/storage_create", func(ctx *gin.Context) {
+	storageServer.command.POST("/storage_create", func(ctx *gin.Context) {
 		var request CreateRequest
 		if err := ctx.BindJSON(&request); err != nil {
 			ctx.JSON(http.StatusBadRequest, nil)
@@ -83,7 +78,7 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 		statusCode, response := storageServer.handleCreate(request)
 		ctx.JSON(statusCode, response)
 	})
-	storageServer.service.POST("/storage_delete", func(ctx *gin.Context) {
+	storageServer.command.POST("/storage_delete", func(ctx *gin.Context) {
 		var request DeleteRequest
 		if err := ctx.BindJSON(&request); err != nil {
 			ctx.JSON(http.StatusBadRequest, nil)
@@ -92,7 +87,7 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 		statusCode, response := storageServer.handleDelete(request)
 		ctx.JSON(statusCode, response)
 	})
-	storageServer.service.POST("/storage_copy", func(ctx *gin.Context) {
+	storageServer.command.POST("/storage_copy", func(ctx *gin.Context) {
 		var request CopyRequest
 		if err := ctx.BindJSON(&request); err != nil {
 			ctx.JSON(http.StatusBadRequest, nil)
@@ -105,23 +100,25 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 }
 
 func (s *StorageServer) Start() {
+	err := s.register()
+	if err != nil {
+		log.Printf("Failed to register: %s\n", err.Error())
+	}
+
+	chanErr := make(chan error)
 	go func() {
 		log.Printf("Storage server client interface listening on port %d\n", s.clientPort)
-		err := s.service.Run(fmt.Sprintf(":%d", s.clientPort))
-		if err != nil {
-			return
-		}
+		err := s.service.Run(fmt.Sprintf("localhost:%d", s.clientPort))
+		chanErr <- err
 	}()
 	go func() {
 		log.Printf("Storage server command interface listening on port %d\n", s.commandPort)
-		err := s.service.Run(fmt.Sprintf(":%d", s.commandPort))
-		if err != nil {
-			return
-		}
+		err := s.command.Run(fmt.Sprintf("localhost:%d", s.commandPort))
+		chanErr <- err
 	}()
-	if err := s.register(); err != nil {
-		log.Fatalf("Failed to register with the naming server: %v", err)
-	}
+
+	err = <-chanErr
+	log.Printf(err.Error())
 }
 
 func (s *StorageServer) pruneEmptyDirs(dir string) error {
@@ -336,13 +333,12 @@ func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
 		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
-	return http.StatusOK, map[string]any{"success": true}
+	return http.StatusOK, SuccessResponse{true}
 }
 
 func (s *StorageServer) register() error {
-	s.mutex.RLock()
+	// TODO: delegate to FS
 	files, err := s.listFiles()
-	s.mutex.RUnlock()
 
 	if err != nil {
 		return err
@@ -366,17 +362,11 @@ func (s *StorageServer) register() error {
 		log.Printf("Failed to send registration request: %v", err)
 		return err
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-
-		}
-	}(resp.Body)
 
 	if resp.StatusCode == http.StatusConflict {
 		var exception DFSException
 		if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
-			log.Printf("Failed to decode registration response: %v", err)
+			log.Printf("Failed to decode registration response: %s", err.Error())
 			return err
 		}
 		log.Printf("Registration failed: %s", exception.Msg)
@@ -388,18 +378,17 @@ func (s *StorageServer) register() error {
 		return fmt.Errorf("registration failed with status code %d", resp.StatusCode)
 	}
 
-	var response struct {
-		Files []string `json:"files"`
-	}
+	var response RegisterResponse
 	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
-		log.Printf("Failed to decode registration response: %v", err)
+		log.Printf("Failed to decode registration response: %s", err.Error())
 		return err
 	}
 
 	log.Printf("Registration successful. Deleting files: %v", response.Files)
 
 	// Delete files that failed to register
+	// TODO: delegate to FS
 	for _, file := range response.Files {
 		filePath := filepath.Join(s.directory, file)
 		err = os.RemoveAll(filePath)
@@ -407,14 +396,6 @@ func (s *StorageServer) register() error {
 			log.Printf("Failed to remove file %s: %v", file, err)
 		}
 	}
-
-	// Create the storage directory if it doesn't exist
-	err = os.MkdirAll(s.directory, os.ModePerm)
-	if err != nil {
-		log.Printf("Failed to create storage directory: %v", err)
-		return err
-	}
-
 	log.Println("Registration completed successfully")
 	return nil
 }
