@@ -15,22 +15,26 @@ type FileSystem struct {
 // ReadFile reads data from a file.
 func (fs *FileSystem) ReadFile(path string, offset, length int64) ([]byte, *DFSException) {
 	filePath := filepath.Join(fs.directory, path)
-	file, err := os.Open(filePath)
+	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, &DFSException{Type: FileNotFoundException, Msg: "File not found"}
 		}
+		return nil, &DFSException{Type: IOException, Msg: "Error accessing file"}
+	}
+	if fileInfo.IsDir() {
+		return nil, &DFSException{Type: FileNotFoundException, Msg: "Path is a directory"}
+	}
+
+	if offset < 0 || length < 0 || offset+length > fileInfo.Size() {
+		return nil, &DFSException{Type: IndexOutOfBoundsException, Msg: "Invalid offset or length"}
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
 		return nil, &DFSException{Type: IOException, Msg: "Error opening file"}
 	}
 	defer file.Close()
-
-	if length == -1 {
-		fileInfo, err := file.Stat()
-		if err != nil {
-			return nil, &DFSException{Type: IOException, Msg: "Error getting file stats"}
-		}
-		length = fileInfo.Size()
-	}
 
 	buffer := make([]byte, length)
 	_, err = file.ReadAt(buffer, offset)
@@ -43,7 +47,22 @@ func (fs *FileSystem) ReadFile(path string, offset, length int64) ([]byte, *DFSE
 
 func (fs *FileSystem) WriteFile(path string, data []byte, offset int64) *DFSException {
 	filePath := filepath.Join(fs.directory, path)
-	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE, 0644)
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &DFSException{Type: FileNotFoundException, Msg: "File not found"}
+		}
+		return &DFSException{Type: IOException, Msg: "Error accessing file"}
+	}
+	if fileInfo.IsDir() {
+		return &DFSException{Type: FileNotFoundException, Msg: "Path is a directory"}
+	}
+
+	if offset < 0 {
+		return &DFSException{Type: IndexOutOfBoundsException, Msg: "Invalid offset"}
+	}
+
+	file, err := os.OpenFile(filePath, os.O_WRONLY, 0644)
 	if err != nil {
 		return &DFSException{Type: IOException, Msg: "Error opening file for writing"}
 	}
@@ -64,45 +83,69 @@ func (fs *FileSystem) GetFileSize(path string) (int64, *DFSException) {
 		if os.IsNotExist(err) {
 			return 0, &DFSException{Type: FileNotFoundException, Msg: "File not found"}
 		}
-		return 0, &DFSException{Type: IOException, Msg: "Error getting file stats"}
+		return 0, &DFSException{Type: IllegalArgumentException, Msg: "Invalid path"}
+	}
+	if fileInfo.IsDir() {
+		return 0, &DFSException{Type: FileNotFoundException, Msg: "Path is a directory"}
 	}
 
 	return fileInfo.Size(), nil
 }
 
-func (fs *FileSystem) CreateFile(path string) *DFSException {
+func (fs *FileSystem) CreateFile(path string) (bool, *DFSException) {
+	if path == "/" {
+		return false, &DFSException{Type: IllegalArgumentException, Msg: "Invalid path"}
+	}
+
 	filePath := filepath.Join(fs.directory, path)
 	_, err := os.Stat(filePath)
 	if err == nil {
-		// file already existed
-		return &DFSException{Type: IllegalStateException, Msg: "File or directory already exists"}
+		return false, &DFSException{Type: IllegalStateException, Msg: "File or directory already exists"}
 	}
 	if !os.IsNotExist(err) {
-		return &DFSException{Type: IOException, Msg: "Error checking file existence"}
+		return false, &DFSException{Type: IOException, Msg: "Error checking file existence"}
 	}
 
 	file, err := os.Create(filePath)
 	if err != nil {
-		return &DFSException{Type: IOException, Msg: "Error creating file"}
+		return false, &DFSException{Type: IOException, Msg: "Error creating file"}
 	}
 	file.Close()
 
-	return nil
+	return true, nil
 }
 
-func (fs *FileSystem) DeleteFile(path string) *DFSException {
+func (fs *FileSystem) DeleteFile(path string) (bool, *DFSException) {
+	if path == "/" {
+		return false, &DFSException{Type: IllegalArgumentException, Msg: "Cannot delete root directory"}
+	}
+
 	filePath := filepath.Join(fs.directory, path)
 	err := os.RemoveAll(filePath)
 	if err != nil {
-		return &DFSException{Type: IOException, Msg: "Error deleting file or directory"}
+		if os.IsNotExist(err) {
+			return false, &DFSException{Type: FileNotFoundException, Msg: "File not found"}
+		}
+		return false, &DFSException{Type: IOException, Msg: "Error deleting file or directory"}
 	}
 
-	return nil
+	return true, nil
 }
 
 func (fs *FileSystem) CopyFile(sourcePath, destinationPath string) *DFSException {
 	sourceFilePath := filepath.Join(fs.directory, sourcePath)
 	destinationFilePath := filepath.Join(fs.directory, destinationPath)
+
+	sourceFileInfo, err := os.Stat(sourceFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &DFSException{Type: FileNotFoundException, Msg: "Source file not found"}
+		}
+		return &DFSException{Type: IOException, Msg: "Error accessing source file"}
+	}
+	if sourceFileInfo.IsDir() {
+		return &DFSException{Type: FileNotFoundException, Msg: "Source path is a directory"}
+	}
 
 	data, err := os.ReadFile(sourceFilePath)
 	if err != nil {
