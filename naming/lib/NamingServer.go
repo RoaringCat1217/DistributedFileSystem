@@ -144,15 +144,15 @@ func (s *NamingServer) getStorageHandler(body PathRequest) (int, any) {
 	if err != nil {
 		return http.StatusNotFound, err
 	}
-	return http.StatusOK, StorageInfoResponse{"localhost", storageServer.clientPort}
+	return http.StatusOK, StorageInfoResponse{"127.0.0.1", storageServer.clientPort}
 }
 
 func (s *NamingServer) createDirectoryHandler(body PathRequest) (int, any) {
-	err := s.root.MakeDirectory(body.Path)
+	success, err := s.root.MakeDirectory(body.Path)
 	if err != nil {
 		return http.StatusNotFound, err
 	}
-	return http.StatusOK, SuccessResponse{true}
+	return http.StatusOK, SuccessResponse{success}
 }
 
 func (s *NamingServer) deleteHandler(body PathRequest) (int, any) {
@@ -187,11 +187,11 @@ func (s *NamingServer) createFileHandler(body PathRequest) (int, any) {
 	storageServer := s.storageServers[idx]
 	s.lock.RUnlock()
 
-	_, err := s.root.CreateFile(body.Path, storageServer)
+	success, err := s.root.CreateFile(body.Path, storageServer)
 	if err != nil {
 		return http.StatusNotFound, err
 	}
-	return http.StatusOK, SuccessResponse{true}
+	return http.StatusOK, SuccessResponse{success}
 }
 
 func (s *NamingServer) listDirHandler(body PathRequest) (int, any) {

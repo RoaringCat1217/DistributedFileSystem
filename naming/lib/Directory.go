@@ -138,40 +138,40 @@ func (d *Directory) PathExists(pth string) (bool, bool, *DFSException) {
 	return foundDir, foundFile, nil
 }
 
-func (d *Directory) MakeDirectory(pth string) *DFSException {
+func (d *Directory) MakeDirectory(pth string) (bool, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
-		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+		return false, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
 	if len(names) == 1 {
-		return &DFSException{IllegalArgumentException, "Cannot call MakeDirectory on root directory"}
+		return false, nil
 	}
 
 	// wlock parent directory
 	parent := d.lockPath(names[:len(names)-1], false)
 	if parent == nil {
-		return &DFSException{FileNotFoundException, "the parent directory does not exist."}
+		return false, &DFSException{FileNotFoundException, "the parent directory does not exist."}
 	}
 	defer d.unlockPath(parent, false)
 
 	newDirName := names[len(names)-1]
 	// check if newDirName conflicts with existing files or directories
-	failed := false
+	existed := false
 	for _, dir := range parent.subDirectories {
 		if dir.name == newDirName {
-			failed = true
+			existed = true
 			break
 		}
 	}
 	for _, file := range parent.subFiles {
 		if file.name == newDirName {
-			failed = true
+			existed = true
 			break
 		}
 	}
-	if failed {
-		// already existed
-		return &DFSException{FileNotFoundException, "directory's name conflicts with existing directories or files."}
+	if existed {
+		// already existed, just ignore it
+		return false, nil
 	}
 
 	// create new directory
@@ -180,7 +180,7 @@ func (d *Directory) MakeDirectory(pth string) *DFSException {
 		parent: parent,
 	}
 	parent.subDirectories = append(parent.subDirectories, newDir)
-	return nil
+	return true, nil
 }
 
 func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSException) {
@@ -204,15 +204,19 @@ func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSExceptio
 	return nil, &DFSException{FileNotFoundException, fmt.Sprintf("cannot find file %s.", pth)}
 }
 
-func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*FileInfo, *DFSException) {
+func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (bool, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
-		return nil, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+		return false, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+	}
+	if len(names) == 1 {
+		// rejects root directory
+		return false, nil
 	}
 	newFileName := names[len(names)-1]
 	parent := d.lockPath(names[:len(names)-1], false)
 	if parent == nil {
-		return nil, &DFSException{FileNotFoundException, "the parent directory does not exist."}
+		return false, &DFSException{FileNotFoundException, "the parent directory does not exist."}
 	}
 	defer d.unlockPath(parent, false)
 
@@ -230,7 +234,7 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*F
 		}
 	}
 	if conflict {
-		return nil, &DFSException{FileNotFoundException, "path conflicts with existing directories or files."}
+		return false, nil
 	}
 
 	newFile := &FileInfo{
@@ -240,7 +244,7 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*F
 		storageServer: storageServer,
 	}
 	parent.subFiles = append(parent.subFiles, newFile)
-	return newFile, nil
+	return true, nil
 }
 
 func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
