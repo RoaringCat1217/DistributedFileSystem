@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,15 +13,16 @@ import (
 )
 
 type StorageServer struct {
-	clientPort  int
-	commandPort int
-	service     *gin.Engine
-	command     *gin.Engine
-	mutex       sync.RWMutex
-	fileSystem  *FileSystem
+	clientPort       int
+	commandPort      int
+	registrationPort int
+	service          *gin.Engine
+	command          *gin.Engine
+	mutex            sync.RWMutex
+	fileSystem       *FileSystem
 }
 
-func NewStorageServer(directory string, clientPort int, commandPort int) *StorageServer {
+func NewStorageServer(directory string, clientPort int, commandPort int, registrationPort int) *StorageServer {
 	// Create the storage directory if it doesn't exist
 	err := os.MkdirAll(directory, os.ModePerm)
 	if err != nil {
@@ -30,11 +30,12 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 	}
 
 	storageServer := &StorageServer{
-		clientPort:  clientPort,
-		commandPort: commandPort,
-		service:     gin.Default(),
-		command:     gin.Default(),
-		fileSystem:  &FileSystem{directory},
+		clientPort:       clientPort,
+		commandPort:      commandPort,
+		registrationPort: registrationPort,
+		service:          gin.Default(),
+		command:          gin.Default(),
+		fileSystem:       &FileSystem{directory},
 	}
 
 	// Register client APIs
@@ -148,25 +149,25 @@ func (s *StorageServer) handleSize(request SizeRequest) (int, any) {
 
 // handleCreate handles the HTTP request for creating a new file.
 func (s *StorageServer) handleCreate(request CreateRequest) (int, any) {
-	// TODO: Ambiguous!
-	err := s.fileSystem.CreateFile(request.Path)
+	success, err := s.fileSystem.CreateFile(request.Path)
 	if err != nil {
 		return http.StatusNotFound, err
 	}
-	return http.StatusOK, SuccessResponse{true}
+	return http.StatusOK, SuccessResponse{success}
 }
 
 // handleDelete handles the HTTP request for deleting a file.
 func (s *StorageServer) handleDelete(request DeleteRequest) (int, any) {
-	err := s.fileSystem.DeleteFile(request.Path)
+	success, err := s.fileSystem.DeleteFile(request.Path)
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		return http.StatusNotFound, err
 	}
-	return http.StatusOK, map[string]any{"success": true}
+	return http.StatusOK, SuccessResponse{success}
 }
 
 // handleCopy handles the HTTP request for copying a file from another storage server.
 func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
+	/* ignore it for this checkpoint
 	// Construct the source URL from the request information
 	sourceURL := fmt.Sprintf("http://%s:%d/storage_read", request.SourceAddr, request.SourcePort)
 
@@ -206,6 +207,8 @@ func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
 
 	// Return success response
 	return http.StatusOK, SuccessResponse{Success: true}
+	*/
+	return 0, nil
 }
 
 func (s *StorageServer) register() error {
@@ -228,7 +231,8 @@ func (s *StorageServer) register() error {
 	}
 
 	log.Printf("Sending registration request to naming server: localhost")
-	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:8080"), "application/json", bytes.NewReader(reqBytes))
+	url := fmt.Sprintf("http://127.0.0.1:%d", s.registrationPort)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
 	if err != nil {
 		log.Printf("Failed to send registration request: %v", err)
 		return err
