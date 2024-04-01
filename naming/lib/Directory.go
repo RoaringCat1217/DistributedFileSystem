@@ -32,6 +32,7 @@ type FileInfo struct {
 	path          string
 	parent        *Directory
 	storageServer *StorageServerInfo
+	lock          sync.RWMutex
 }
 
 func (d *Directory) lockPath(names []string, readonly bool) *Directory {
@@ -329,6 +330,49 @@ func (d *Directory) ListDir(pth string) ([]string, *DFSException) {
 		itemNames = append(itemNames, subdir.name)
 	}
 	return itemNames, nil
+}
+
+func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException {
+	names := pathToNames(pth)
+	if len(names) == 0 {
+		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+	}
+	if len(names) == 1 {
+		// lock the root directory
+		if readonly {
+			d.lock.RLock()
+		} else {
+			d.lock.Lock()
+		}
+		return nil
+	}
+	itemName := names[len(names)-1]
+	parent := d.lockPath(names[:len(names)-1], true)
+	if parent == nil {
+		return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
+	}
+	for _, dir := range parent.subDirectories {
+		if dir.name == itemName {
+			if readonly {
+				dir.lock.RLock()
+			} else {
+				dir.lock.Lock()
+			}
+			return nil
+		}
+	}
+	for _, file := range parent.subFiles {
+		if file.name == itemName {
+			if readonly {
+				file.lock.RLock()
+			} else {
+				file.lock.Lock()
+			}
+			return nil
+		}
+	}
+	d.unlockPath(parent, true)
+	return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
 }
 
 func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInfo) []bool {
