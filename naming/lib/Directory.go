@@ -23,6 +23,7 @@ type Directory struct {
 	parent         *Directory
 	subDirectories []*Directory
 	subFiles       []*FileInfo
+	namingServer   *NamingServer
 	lock           sync.RWMutex
 }
 
@@ -244,6 +245,8 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (bo
 		storageServer: storageServer,
 	}
 	parent.subFiles = append(parent.subFiles, newFile)
+	// notify storage server
+	d.namingServer.storageCreateCommand(newFile)
 	return true, nil
 }
 
