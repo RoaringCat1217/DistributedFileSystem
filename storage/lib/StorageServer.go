@@ -32,6 +32,12 @@ type StorageServer struct {
 }
 
 func NewStorageServer(directory string, namingServer string, clientPort int, commandPort int) *StorageServer {
+	// Create the storage directory if it doesn't exist
+	err := os.MkdirAll(directory, os.ModePerm)
+	if err != nil {
+		log.Fatalf("Failed to create storage directory: %v", err)
+	}
+
 	storageServer := &StorageServer{
 		directory:    directory,
 		namingServer: namingServer,
@@ -356,26 +362,26 @@ func (s *StorageServer) register() error {
 		return err
 	}
 
+	log.Printf("Sending registration request to naming server: %s", s.namingServer)
 	resp, err := http.Post(fmt.Sprintf("http://%s/register", s.namingServer), "application/json", bytes.NewReader(reqBytes))
 	if err != nil {
+		log.Printf("Failed to send registration request: %v", err)
 		return err
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-
-		}
-	}(resp.Body)
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusConflict {
 		var exception DFSException
 		if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
+			log.Printf("Failed to decode registration response: %v", err)
 			return err
 		}
+		log.Printf("Registration failed: %s", exception.Msg)
 		return fmt.Errorf("registration failed: %s", exception.Msg)
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("Registration failed with status code: %d", resp.StatusCode)
 		return fmt.Errorf("registration failed with status code %d", resp.StatusCode)
 	}
 
@@ -384,8 +390,11 @@ func (s *StorageServer) register() error {
 	}
 	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
+		log.Printf("Failed to decode registration response: %v", err)
 		return err
 	}
+
+	log.Printf("Registration successful. Deleting files: %v", response.Files)
 
 	// Delete files that failed to register
 	for _, file := range response.Files {
@@ -396,12 +405,14 @@ func (s *StorageServer) register() error {
 		}
 	}
 
-	// Prune empty directories
-	err = s.pruneEmptyDirs(s.directory)
+	// Create the storage directory if it doesn't exist
+	err = os.MkdirAll(s.directory, os.ModePerm)
 	if err != nil {
-		log.Printf("Failed to prune empty directories: %v", err)
+		log.Printf("Failed to create storage directory: %v", err)
+		return err
 	}
 
+	log.Println("Registration completed successfully")
 	return nil
 }
 
