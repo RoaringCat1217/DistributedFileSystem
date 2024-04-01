@@ -8,8 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +20,7 @@ type StorageServer struct {
 	service     *gin.Engine
 	command     *gin.Engine
 	mutex       sync.RWMutex
+	fileSystem  *FileSystem
 }
 
 func NewStorageServer(directory string, clientPort int, commandPort int) *StorageServer {
@@ -37,6 +36,7 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 		commandPort: commandPort,
 		service:     gin.Default(),
 		command:     gin.Default(),
+		fileSystem:  NewFileSystem(directory),
 	}
 
 	// Register client APIs
@@ -121,223 +121,101 @@ func (s *StorageServer) Start() {
 	log.Printf(err.Error())
 }
 
-func (s *StorageServer) pruneEmptyDirs(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			subdir := filepath.Join(dir, entry.Name())
-			if err := s.pruneEmptyDirs(subdir); err != nil {
-				return err
-			}
-		}
-	}
-	entries, err = os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	if len(entries) == 0 && dir != s.directory {
-		if err := os.Remove(dir); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // handleRead handles the HTTP request for reading data from a file.
 func (s *StorageServer) handleRead(request ReadRequest) (int, any) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	filePath := filepath.Join(s.directory, request.Path)
-	fileInfo, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		return http.StatusNotFound, DFSException{Type: FileNotFoundException, Msg: "file not found"}
-	}
-	if fileInfo.IsDir() {
-		return http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot read a directory"}
-	}
-
-	file, err := os.Open(filePath)
+	data, err := s.fileSystem.ReadFile(request.Path, int64(request.Offset), int64(request.Length))
 	if err != nil {
 		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
-	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-
-		}
-	}(file)
-
-	_, err = file.Seek(int64(request.Offset), io.SeekStart)
-	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-	}
-
-	data := make([]byte, int(request.Length))
-	_, err = file.Read(data)
-	if err != nil && err != io.EOF {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-	}
-
 	return http.StatusOK, map[string]any{"data": string(data)}
 }
 
+
 // handleWrite handles the HTTP request for writing data to a file.
 func (s *StorageServer) handleWrite(request WriteRequest) (int, any) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	filePath := filepath.Join(s.directory, request.Path)
-	fileInfo, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		return http.StatusNotFound, DFSException{Type: FileNotFoundException, Msg: "file not found"}
-	}
-	if fileInfo.IsDir() {
-		return http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot write to a directory"}
-	}
-
-	file, err := os.OpenFile(filePath, os.O_WRONLY, 0644)
+	err := s.fileSystem.WriteFile(request.Path, []byte(request.Data), int64(request.Offset))
 	if err != nil {
 		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
-	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-
-		}
-	}(file)
-
-	_, err = file.Seek(int64(request.Offset), io.SeekStart)
-	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-	}
-
-	_, err = file.WriteString(request.Data)
-	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-	}
-
 	return http.StatusOK, map[string]any{"success": true}
 }
+
 
 // handleSize handles the HTTP request for retrieving the size of a file.
 func (s *StorageServer) handleSize(request SizeRequest) (int, any) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	filePath := filepath.Join(s.directory, request.Path)
-	fileInfo, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		return http.StatusNotFound, DFSException{Type: FileNotFoundException}
+	size, err := s.fileSystem.GetFileSize(request.Path)
+	if err != nil {
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
-	if fileInfo.IsDir() {
-		return http.StatusBadRequest, DFSException{Type: IllegalStateException, Msg: "cannot get size of a directory"}
-	}
-
-	size := fileInfo.Size()
 	return http.StatusOK, map[string]any{"size": size}
 }
 
+
 // handleCreate handles the HTTP request for creating a new file.
 func (s *StorageServer) handleCreate(request CreateRequest) (int, any) {
-	if request.Path == "/" {
-		return http.StatusBadRequest, DFSException{Type: IllegalArgumentException, Msg: "Path is invalid"}
-	}
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	filePath := filepath.Join(s.directory, request.Path)
-	dir := filepath.Dir(filePath)
-	err := os.MkdirAll(dir, 0755)
+	err := s.fileSystem.CreateFile(request.Path)
 	if err != nil {
 		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
-
-	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-	}
-	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-
-		}
-	}(file)
-
 	return http.StatusOK, map[string]any{"success": true}
 }
+
 
 // handleDelete handles the HTTP request for deleting a file.
 func (s *StorageServer) handleDelete(request DeleteRequest) (int, any) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	filePath := filepath.Join(s.directory, request.Path)
-	err := os.RemoveAll(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return http.StatusNotFound, DFSException{Type: FileNotFoundException}
-		} else {
-			return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-		}
-	}
-
-	// Remove empty parent directories recursively
-	parentDir := filepath.Dir(filePath)
-	err = s.pruneEmptyDirs(parentDir)
-	if err != nil {
-		log.Printf("Failed to prune empty directories: %v", err)
-	}
-
-	return http.StatusOK, map[string]any{"success": true}
-}
-
-// handleCopy handles the HTTP request for copying a file from another storage server.
-func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
-	sourceURL := fmt.Sprintf("http://%s:%d/storage_read", request.SourceAddr, int(request.SourcePort))
-	resp, err := http.Post(sourceURL, "application/json", strings.NewReader(fmt.Sprintf(`{"path":"%s","offset":0,"length":-1}`, request.Path)))
+	err := s.fileSystem.DeleteFile(request.Path)
 	if err != nil {
 		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
+	return http.StatusOK, map[string]any{"success": true}
+}
 
-		}
-	}(resp.Body)
 
+// handleCopy handles the HTTP request for copying a file from another storage server.
+func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
+	// Construct the source URL from the request information
+	sourceURL := fmt.Sprintf("http://%s:%d/storage_read", request.SourceAddr, request.SourcePort)
+
+	// Create the JSON payload for the POST request
+	payload, err := json.Marshal(map[string]any{"path": request.Path, "offset": 0, "length": -1})
+	if err != nil {
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to encode request payload"}
+	}
+
+	// Execute the POST request to the source server
+	resp, err := http.Post(sourceURL, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to fetch data from source server"}
+	}
+	defer resp.Body.Close()
+
+	// Check the response status code
 	if resp.StatusCode != http.StatusOK {
 		var exception DFSException
 		if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
-			return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+			return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to decode error from source server"}
 		}
 		return resp.StatusCode, exception
 	}
 
+	// Read the data from the response
 	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to read data from source server response"}
+	}
+
+	// Write the data to a file in the destination directory
+	err = s.fileSystem.WriteFile(request.Path, data, 0)
 	if err != nil {
 		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	filePath := filepath.Join(s.directory, request.Path)
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-	}
-
-	if err := os.WriteFile(filePath, data, os.ModePerm); err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
-	}
-
-	return http.StatusOK, SuccessResponse{true}
+	// Return success response
+	return http.StatusOK, SuccessResponse{Success: true}
 }
 
+
 func (s *StorageServer) register() error {
-	// TODO: delegate to FS
 	files, err := s.listFiles()
 
 	if err != nil {
@@ -388,38 +266,15 @@ func (s *StorageServer) register() error {
 	log.Printf("Registration successful. Deleting files: %v", response.Files)
 
 	// Delete files that failed to register
-	// TODO: delegate to FS
-	for _, file := range response.Files {
-		filePath := filepath.Join(s.directory, file)
-		err = os.RemoveAll(filePath)
-		if err != nil {
-			log.Printf("Failed to remove file %s: %v", file, err)
-		}
+	err = s.fileSystem.DeleteFiles(response.Files)
+	if err != nil {
+		log.Printf("Batch file deletion failed: %v", err)
 	}
 	log.Println("Registration completed successfully")
 	return nil
 }
 
 func (s *StorageServer) listFiles() ([]string, error) {
-	var files []string
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	err := filepath.Walk(s.directory, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			relPath, err := filepath.Rel(s.directory, path)
-			if err != nil {
-				return err
-			}
-			files = append(files, "/"+relPath)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return files, nil
+	return s.fileSystem.ListFiles()
 }
+
