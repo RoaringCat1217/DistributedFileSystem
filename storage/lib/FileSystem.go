@@ -98,10 +98,14 @@ func (fs *FileSystem) CreateFile(path string) (bool, *DFSException) {
 	}
 
 	filePath := filepath.Join(fs.directory, path)
-	_, err := os.Stat(filePath)
+	fileInfo, err := os.Stat(filePath)
 	if err == nil {
 		return false, &DFSException{Type: IllegalStateException, Msg: "File or directory already exists"}
 	}
+	if fileInfo.IsDir() {
+		return false, &DFSException{Type: FileNotFoundException, Msg: "Path is a directory"}
+	}
+
 	if !os.IsNotExist(err) {
 		return false, &DFSException{Type: IOException, Msg: "Error checking file existence"}
 	}
@@ -121,7 +125,15 @@ func (fs *FileSystem) DeleteFile(path string) (bool, *DFSException) {
 	}
 
 	filePath := filepath.Join(fs.directory, path)
-	err := os.RemoveAll(filePath)
+	fileInfo, err := os.Stat(filePath)
+	if err == nil {
+		return false, &DFSException{Type: IllegalStateException, Msg: "File or directory already exists"}
+	}
+	if fileInfo.IsDir() {
+		return false, &DFSException{Type: FileNotFoundException, Msg: "Path is a directory"}
+	}
+
+	err = os.RemoveAll(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, &DFSException{Type: FileNotFoundException, Msg: "File not found"}

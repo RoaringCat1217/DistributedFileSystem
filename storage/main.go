@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 4 {
+	if len(os.Args) != 5 {
 		fmt.Println("Wrong number of arguments")
 		os.Exit(-1)
 	}
