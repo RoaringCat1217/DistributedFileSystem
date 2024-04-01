@@ -24,14 +24,13 @@ type RegisterRequest struct {
 
 type StorageServer struct {
 	directory    string
-	namingServer string
 	clientPort   int
 	commandPort  int
 	service      *gin.Engine
 	mutex        sync.RWMutex
 }
 
-func NewStorageServer(directory string, namingServer string, clientPort int, commandPort int) *StorageServer {
+func NewStorageServer(directory string, clientPort int, commandPort int) *StorageServer {
 	// Create the storage directory if it doesn't exist
 	err := os.MkdirAll(directory, os.ModePerm)
 	if err != nil {
@@ -40,7 +39,6 @@ func NewStorageServer(directory string, namingServer string, clientPort int, com
 
 	storageServer := &StorageServer{
 		directory:    directory,
-		namingServer: namingServer,
 		clientPort:   clientPort,
 		commandPort:  commandPort,
 		service:      gin.Default(),
@@ -362,13 +360,18 @@ func (s *StorageServer) register() error {
 		return err
 	}
 
-	log.Printf("Sending registration request to naming server: %s", s.namingServer)
-	resp, err := http.Post(fmt.Sprintf("http://%s/register", s.namingServer), "application/json", bytes.NewReader(reqBytes))
+	log.Printf("Sending registration request to naming server: localhost")
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:8080"), "application/json", bytes.NewReader(reqBytes))
 	if err != nil {
 		log.Printf("Failed to send registration request: %v", err)
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	if resp.StatusCode == http.StatusConflict {
 		var exception DFSException
