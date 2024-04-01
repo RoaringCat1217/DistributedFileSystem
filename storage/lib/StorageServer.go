@@ -14,7 +14,6 @@ import (
 )
 
 type StorageServer struct {
-	directory   string
 	clientPort  int
 	commandPort int
 	service     *gin.Engine
@@ -31,12 +30,11 @@ func NewStorageServer(directory string, clientPort int, commandPort int) *Storag
 	}
 
 	storageServer := &StorageServer{
-		directory:   directory,
 		clientPort:  clientPort,
 		commandPort: commandPort,
 		service:     gin.Default(),
 		command:     gin.Default(),
-		fileSystem:  NewFileSystem(directory),
+		fileSystem:  &FileSystem{directory},
 	}
 
 	// Register client APIs
@@ -125,41 +123,38 @@ func (s *StorageServer) Start() {
 func (s *StorageServer) handleRead(request ReadRequest) (int, any) {
 	data, err := s.fileSystem.ReadFile(request.Path, int64(request.Offset), int64(request.Length))
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		return http.StatusNotFound, err
 	}
-	return http.StatusOK, map[string]any{"data": string(data)}
+	return http.StatusOK, ReadResponse{string(data)}
 }
-
 
 // handleWrite handles the HTTP request for writing data to a file.
 func (s *StorageServer) handleWrite(request WriteRequest) (int, any) {
 	err := s.fileSystem.WriteFile(request.Path, []byte(request.Data), int64(request.Offset))
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		return http.StatusNotFound, err
 	}
-	return http.StatusOK, map[string]any{"success": true}
+	return http.StatusOK, SuccessResponse{true}
 }
-
 
 // handleSize handles the HTTP request for retrieving the size of a file.
 func (s *StorageServer) handleSize(request SizeRequest) (int, any) {
 	size, err := s.fileSystem.GetFileSize(request.Path)
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		return http.StatusNotFound, err
 	}
-	return http.StatusOK, map[string]any{"size": size}
+	return http.StatusOK, SizeResponse{size}
 }
-
 
 // handleCreate handles the HTTP request for creating a new file.
 func (s *StorageServer) handleCreate(request CreateRequest) (int, any) {
+	// TODO: Ambiguous!
 	err := s.fileSystem.CreateFile(request.Path)
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		return http.StatusNotFound, err
 	}
-	return http.StatusOK, map[string]any{"success": true}
+	return http.StatusOK, SuccessResponse{true}
 }
-
 
 // handleDelete handles the HTTP request for deleting a file.
 func (s *StorageServer) handleDelete(request DeleteRequest) (int, any) {
@@ -169,7 +164,6 @@ func (s *StorageServer) handleDelete(request DeleteRequest) (int, any) {
 	}
 	return http.StatusOK, map[string]any{"success": true}
 }
-
 
 // handleCopy handles the HTTP request for copying a file from another storage server.
 func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
@@ -213,7 +207,6 @@ func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
 	// Return success response
 	return http.StatusOK, SuccessResponse{Success: true}
 }
-
 
 func (s *StorageServer) register() error {
 	files, err := s.listFiles()
@@ -277,4 +270,3 @@ func (s *StorageServer) register() error {
 func (s *StorageServer) listFiles() ([]string, error) {
 	return s.fileSystem.ListFiles()
 }
-

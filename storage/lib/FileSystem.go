@@ -5,40 +5,29 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
 // FileSystem represents the file system operations of the storage server.
 type FileSystem struct {
 	directory string
-	mutex     sync.RWMutex
-}
-
-// NewFileSystem creates a new instance of FileSystem.
-func NewFileSystem(directory string) *FileSystem {
-	return &FileSystem{
-		directory: directory,
-	}
 }
 
 // ReadFile reads data from a file.
-func (fs *FileSystem) ReadFile(path string, offset, length int64) ([]byte, DFSException) {
-	fs.mutex.RLock()
-	defer fs.mutex.RUnlock()
+func (fs *FileSystem) ReadFile(path string, offset, length int64) ([]byte, *DFSException) {
 	filePath := filepath.Join(fs.directory, path)
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, DFSException{Type: FileNotFoundException, Msg: "File not found"}
+			return nil, &DFSException{Type: FileNotFoundException, Msg: "File not found"}
 		}
-		return nil, DFSException{Type: IOException, Msg: "Error opening file"}
+		return nil, &DFSException{Type: IOException, Msg: "Error opening file"}
 	}
 	defer file.Close()
 
 	if length == -1 {
 		fileInfo, err := file.Stat()
 		if err != nil {
-			return nil, DFSException{Type: IOException, Msg: "Error getting file stats"}
+			return nil, &DFSException{Type: IOException, Msg: "Error getting file stats"}
 		}
 		length = fileInfo.Size()
 	}
@@ -46,105 +35,91 @@ func (fs *FileSystem) ReadFile(path string, offset, length int64) ([]byte, DFSEx
 	buffer := make([]byte, length)
 	_, err = file.ReadAt(buffer, offset)
 	if err != nil && err != io.EOF {
-		return nil, DFSException{Type: IOException, Msg: "Error reading file"}
+		return nil, &DFSException{Type: IOException, Msg: "Error reading file"}
 	}
 
-	return buffer, DFSException{}
+	return buffer, nil
 }
 
-func (fs *FileSystem) WriteFile(path string, data []byte, offset int64) DFSException {
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
-
+func (fs *FileSystem) WriteFile(path string, data []byte, offset int64) *DFSException {
 	filePath := filepath.Join(fs.directory, path)
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
-		return DFSException{Type: IOException, Msg: "Error opening file for writing"}
+		return &DFSException{Type: IOException, Msg: "Error opening file for writing"}
 	}
 	defer file.Close()
 
 	_, err = file.WriteAt(data, offset)
 	if err != nil {
-		return DFSException{Type: IOException, Msg: "Error writing to file"}
+		return &DFSException{Type: IOException, Msg: "Error writing to file"}
 	}
 
-	return DFSException{}
+	return nil
 }
 
-func (fs *FileSystem) GetFileSize(path string) (int64, DFSException) {
-	fs.mutex.RLock()
-	defer fs.mutex.RUnlock()
-
+func (fs *FileSystem) GetFileSize(path string) (int64, *DFSException) {
 	filePath := filepath.Join(fs.directory, path)
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, DFSException{Type: FileNotFoundException, Msg: "File not found"}
+			return 0, &DFSException{Type: FileNotFoundException, Msg: "File not found"}
 		}
-		return 0, DFSException{Type: IOException, Msg: "Error getting file stats"}
+		return 0, &DFSException{Type: IOException, Msg: "Error getting file stats"}
 	}
 
-	return fileInfo.Size(), DFSException{}
+	return fileInfo.Size(), nil
 }
 
-func (fs *FileSystem) CreateFile(path string) DFSException {
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
-
+func (fs *FileSystem) CreateFile(path string) *DFSException {
 	filePath := filepath.Join(fs.directory, path)
 	_, err := os.Stat(filePath)
 	if err == nil {
-		return DFSException{Type: IllegalStateException, Msg: "File or directory already exists"}
+		// file already existed
+		return &DFSException{Type: IllegalStateException, Msg: "File or directory already exists"}
 	}
 	if !os.IsNotExist(err) {
-		return DFSException{Type: IOException, Msg: "Error checking file existence"}
+		return &DFSException{Type: IOException, Msg: "Error checking file existence"}
 	}
 
 	file, err := os.Create(filePath)
 	if err != nil {
-		return DFSException{Type: IOException, Msg: "Error creating file"}
+		return &DFSException{Type: IOException, Msg: "Error creating file"}
 	}
 	file.Close()
 
-	return DFSException{}
+	return nil
 }
 
-func (fs *FileSystem) DeleteFile(path string) DFSException {
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
-
+func (fs *FileSystem) DeleteFile(path string) *DFSException {
 	filePath := filepath.Join(fs.directory, path)
 	err := os.RemoveAll(filePath)
 	if err != nil {
-		return DFSException{Type: IOException, Msg: "Error deleting file or directory"}
+		return &DFSException{Type: IOException, Msg: "Error deleting file or directory"}
 	}
 
-	return DFSException{}
+	return nil
 }
 
-func (fs *FileSystem) CopyFile(sourcePath, destinationPath string) DFSException {
+func (fs *FileSystem) CopyFile(sourcePath, destinationPath string) *DFSException {
 	sourceFilePath := filepath.Join(fs.directory, sourcePath)
 	destinationFilePath := filepath.Join(fs.directory, destinationPath)
 
 	data, err := os.ReadFile(sourceFilePath)
 	if err != nil {
-		return DFSException{Type: IOException, Msg: "Error reading source file"}
+		return &DFSException{Type: IOException, Msg: "Error reading source file"}
 	}
 
 	err = os.WriteFile(destinationFilePath, data, 0644)
 	if err != nil {
-		return DFSException{Type: IOException, Msg: "Error writing to destination file"}
+		return &DFSException{Type: IOException, Msg: "Error writing to destination file"}
 	}
 
-	return DFSException{}
+	return nil
 }
-
 
 // ListFiles lists all files in the directory.
 func (fs *FileSystem) ListFiles() ([]string, error) {
 	var files []string
-	fs.mutex.RLock()
-	defer fs.mutex.RUnlock()
 
 	err := filepath.Walk(fs.directory, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -167,9 +142,6 @@ func (fs *FileSystem) ListFiles() ([]string, error) {
 
 // DeleteFiles deletes a list of files or directories.
 func (fs *FileSystem) DeleteFiles(paths []string) error {
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
-
 	for _, path := range paths {
 		fullPath := filepath.Join(fs.directory, path)
 		if err := os.RemoveAll(fullPath); err != nil {
