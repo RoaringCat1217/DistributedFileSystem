@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -32,33 +33,35 @@ func (fs *FileSystem) checkFileExist(path string) (os.FileInfo, *DFSException) {
 }
 
 // ReadFile reads data from a file.
-func (fs *FileSystem) ReadFile(path string, offset, length int64) ([]byte, *DFSException) {
+func (fs *FileSystem) ReadFile(path string, offset, length int64) (string, *DFSException) {
 	fileInfo, ex := fs.checkFileExist(path)
 	if ex != nil {
-		return nil, ex
+		return "", ex
 	}
 
 	if offset < 0 || length < 0 || offset+length > fileInfo.Size() {
-		return nil, &DFSException{Type: IndexOutOfBoundsException, Msg: "Invalid offset or length"}
+		return "", &DFSException{Type: IndexOutOfBoundsException, Msg: "Invalid offset or length"}
 	}
 
 	filePath := filepath.Join(fs.directory, path)
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, &DFSException{Type: IOException, Msg: fmt.Sprintf("Error opening file: %s", err.Error())}
+		return "", &DFSException{Type: IOException, Msg: fmt.Sprintf("Error opening file: %s", err.Error())}
 	}
 	defer file.Close()
 
 	buffer := make([]byte, length)
 	_, err = file.ReadAt(buffer, offset)
 	if err != nil && err != io.EOF {
-		return nil, &DFSException{Type: IOException, Msg: fmt.Sprintf("Error reading file: %s", err.Error())}
+		return "", &DFSException{Type: IOException, Msg: fmt.Sprintf("Error reading file: %s", err.Error())}
 	}
+	// encode with Base64
+	encoded := base64.StdEncoding.EncodeToString(buffer)
 
-	return buffer, nil
+	return encoded, nil
 }
 
-func (fs *FileSystem) WriteFile(path string, data []byte, offset int64) *DFSException {
+func (fs *FileSystem) WriteFile(path string, data string, offset int64) *DFSException {
 	_, ex := fs.checkFileExist(path)
 	if ex != nil {
 		return ex
@@ -74,7 +77,12 @@ func (fs *FileSystem) WriteFile(path string, data []byte, offset int64) *DFSExce
 	}
 	defer file.Close()
 
-	_, err = file.WriteAt(data, offset)
+	// decode base64 string
+	decodedBytes, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return &DFSException{IOException, fmt.Sprintf("Error when decoding string: %s", err.Error())}
+	}
+	_, err = file.WriteAt(decodedBytes, offset)
 	if err != nil {
 		return &DFSException{Type: IOException, Msg: "Error writing to file"}
 	}

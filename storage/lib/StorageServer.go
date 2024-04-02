@@ -125,12 +125,12 @@ func (s *StorageServer) handleRead(request ReadRequest) (int, any) {
 	if err != nil {
 		return http.StatusNotFound, err
 	}
-	return http.StatusOK, ReadResponse{string(data)}
+	return http.StatusOK, ReadResponse{data}
 }
 
 // handleWrite handles the HTTP request for writing data to a file.
 func (s *StorageServer) handleWrite(request WriteRequest) (int, any) {
-	err := s.fileSystem.WriteFile(request.Path, []byte(request.Data), request.Offset)
+	err := s.fileSystem.WriteFile(request.Path, request.Data, request.Offset)
 	if err != nil {
 		return http.StatusNotFound, err
 	}
