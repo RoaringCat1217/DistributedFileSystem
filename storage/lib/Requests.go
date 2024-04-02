@@ -7,15 +7,15 @@ type RegisterRequest struct {
 	Files       []string `json:"files"`
 }
 type ReadRequest struct {
-	Path   string  `json:"path"`
-	Offset float64 `json:"offset" binding:"required"`
-	Length float64 `json:"length" binding:"required"`
+	Path   string `json:"path"`
+	Offset int64  `json:"offset"`
+	Length int64  `json:"length"`
 }
 
 type WriteRequest struct {
-	Path   string  `json:"path"`
-	Offset float64 `json:"offset" binding:"required"`
-	Data   string  `json:"data" binding:"required"`
+	Path   string `json:"path"`
+	Offset int64  `json:"offset"`
+	Data   string `json:"data"`
 }
 
 type DeleteRequest struct {

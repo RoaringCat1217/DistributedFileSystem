@@ -4,14 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/gin-gonic/gin"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
-	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 type StorageServer struct {
@@ -25,12 +21,6 @@ type StorageServer struct {
 }
 
 func NewStorageServer(directory string, clientPort int, commandPort int, registrationPort int) *StorageServer {
-	// Create the storage directory if it doesn't exist
-	err := os.MkdirAll(directory, os.ModePerm)
-	if err != nil {
-		log.Fatalf("Failed to create storage directory: %v", err)
-	}
-
 	storageServer := &StorageServer{
 		clientPort:       clientPort,
 		commandPort:      commandPort,
@@ -101,9 +91,16 @@ func NewStorageServer(directory string, clientPort int, commandPort int, registr
 }
 
 func (s *StorageServer) Start() {
-	err := s.register()
-	if err != nil {
-		log.Printf("Failed to register: %s\n", err.Error())
+	log.Printf("Trying to register at port %d\n", s.registrationPort)
+	for {
+		err := s.register()
+		if err != nil {
+			// log.Printf("Failed to register: %s\n", err.Error())
+			continue
+		} else {
+			log.Println("Registered successfully")
+			break
+		}
 	}
 
 	chanErr := make(chan error)
@@ -118,7 +115,7 @@ func (s *StorageServer) Start() {
 		chanErr <- err
 	}()
 
-	err = <-chanErr
+	err := <-chanErr
 	log.Printf(err.Error())
 }
 
@@ -133,7 +130,7 @@ func (s *StorageServer) handleRead(request ReadRequest) (int, any) {
 
 // handleWrite handles the HTTP request for writing data to a file.
 func (s *StorageServer) handleWrite(request WriteRequest) (int, any) {
-	err := s.fileSystem.WriteFile(request.Path, []byte(request.Data), int64(request.Offset))
+	err := s.fileSystem.WriteFile(request.Path, []byte(request.Data), request.Offset)
 	if err != nil {
 		return http.StatusNotFound, err
 	}
@@ -214,117 +211,72 @@ func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
 }
 
 func (s *StorageServer) register() error {
-	maxRetries := 5
-	retryDelay := 1 * time.Second
+	files, err := s.fileSystem.ListFiles()
+	if err != nil {
+		return err
+	}
 
-	for i := 0; i < maxRetries; i++ {
-		files, err := s.listFiles()
-		if err != nil {
-			return err
-		}
+	reqBody := RegisterRequest{
+		StorageIP:   "127.0.0.1",
+		ClientPort:  s.clientPort,
+		CommandPort: s.commandPort,
+		Files:       files,
+	}
 
-		reqBody := RegisterRequest{
-			StorageIP:   "127.0.0.1",
-			ClientPort:  s.clientPort,
-			CommandPort: s.commandPort,
-			Files:       files,
-		}
+	reqBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
 
-		reqBytes, err := json.Marshal(reqBody)
-		if err != nil {
-			return err
-		}
+	url := fmt.Sprintf("http://localhost:%d/register", s.registrationPort)
+	log.Printf("Sending registration request to %s\n", url)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		log.Printf("Failed to send registration request: %v", err)
+		return err
+	}
+	defer resp.Body.Close()
 
-		log.Printf("Sending registration request: localhost")
-		url := fmt.Sprintf("http://127.0.0.1:%d/register", s.registrationPort)
-		resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
-		if err != nil {
-			log.Printf("Failed to send registration request: %v", err)
-			if i < maxRetries-1 {
-				log.Printf("Retrying registration in %v", retryDelay)
-				time.Sleep(retryDelay)
-				continue
-			}
-			return err
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == http.StatusConflict {
-			var exception DFSException
-			if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
-				log.Printf("Failed to decode registration response: %s", err.Error())
-				return err
-			}
-			log.Printf("Registration failed: %s", exception.Msg)
-			return fmt.Errorf("registration failed: %s", exception.Msg)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("Registration failed with status code: %d", resp.StatusCode)
-			return fmt.Errorf("registration failed with status code %d", resp.StatusCode)
-		}
-
-		var response RegisterResponse
-		err = json.NewDecoder(resp.Body).Decode(&response)
-		if err != nil {
+	if resp.StatusCode == http.StatusConflict {
+		var exception DFSException
+		if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
 			log.Printf("Failed to decode registration response: %s", err.Error())
 			return err
 		}
-
-		if len(response.Files) > 0 {
-			log.Printf("Registration successful. Deleting files: %v", response.Files)
-
-			// Delete files specified by the naming server
-			err = s.fileSystem.DeleteFiles(response.Files)
-			if err != nil {
-				log.Printf("Failed to delete files: %v", err)
-				return err
-			}
-
-			// Prune empty directories recursively
-			err = s.pruneEmptyDirs(s.fileSystem.directory)
-			if err != nil {
-				log.Printf("Failed to prune empty directories: %v", err)
-				return err
-			}
-		}
-
-		log.Println("Registration completed successfully")
-		return nil
+		log.Printf("Registration failed: %s", exception.Msg)
+		return fmt.Errorf("registration failed: %s", exception.Msg)
 	}
 
-	return fmt.Errorf("registration failed after %d retries", maxRetries)
-}
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Registration failed with status code: %d", resp.StatusCode)
+		return fmt.Errorf("registration failed with status code %d", resp.StatusCode)
+	}
 
-func (s *StorageServer) pruneEmptyDirs(dir string) error {
-	entries, err := os.ReadDir(dir)
+	var response RegisterResponse
+	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
+		log.Printf("Failed to decode registration response: %s", err.Error())
 		return err
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			subdir := filepath.Join(dir, entry.Name())
-			if err := s.pruneEmptyDirs(subdir); err != nil {
-				return err
-			}
+	if len(response.Files) > 0 {
+		log.Printf("Registration successful. Deleting files: %v", response.Files)
+
+		// Delete files specified by the naming server
+		err = s.fileSystem.DeleteFiles(response.Files)
+		if err != nil {
+			log.Printf("Failed to delete files: %v", err)
+			return err
 		}
-	}
 
-	entries, err = os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-
-	if len(entries) == 0 && dir != s.fileSystem.directory {
-		if err := os.Remove(dir); err != nil {
+		// Prune empty directories recursively
+		err = s.fileSystem.Prune()
+		if err != nil {
+			log.Printf("Failed to prune empty directories: %v", err)
 			return err
 		}
 	}
 
+	log.Println("Registration completed successfully")
 	return nil
-}
-
-func (s *StorageServer) listFiles() ([]string, error) {
-	return s.fileSystem.ListFiles()
 }

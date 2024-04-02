@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	storage "storage/lib"
 	"strconv"
@@ -33,10 +32,12 @@ func main() {
 
 	directory := os.Args[4]
 	// Ensure the storage directory exists
-	err = os.MkdirAll(directory, os.ModePerm)
-	if err != nil {
-		log.Fatalf("Failed to create storage directory: %v", err)
-	}
+	/*
+		err = os.MkdirAll(directory, os.ModePerm)
+		if err != nil {
+			log.Fatalf("Failed to create storage directory: %v", err)
+		}
+	*/
 
 	server := storage.NewStorageServer(directory, clientPort, commandPort, registrationPort)
 	server.Start()
