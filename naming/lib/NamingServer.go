@@ -1,14 +1,9 @@
 package naming
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"hash/fnv"
-	"io"
 	"net/http"
-	"path"
 	"sync"
 )
 
@@ -105,6 +100,24 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 		statusCode, response := namingServer.isDirectoryHandler(request)
 		ctx.JSON(statusCode, response)
 	})
+	namingServer.service.POST("/lock", func(ctx *gin.Context) {
+		var request LockRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := namingServer.lockHandler(request)
+		ctx.JSON(statusCode, response)
+	})
+	namingServer.service.POST("/unlock", func(ctx *gin.Context) {
+		var request LockRequest
+		if err := ctx.BindJSON(&request); err != nil {
+			ctx.JSON(http.StatusBadRequest, nil)
+			return
+		}
+		statusCode, response := namingServer.unlockHandler(request)
+		ctx.JSON(statusCode, response)
+	})
 
 	// register registration API
 	namingServer.registration.POST("/register", func(ctx *gin.Context) {
@@ -132,165 +145,4 @@ func (s *NamingServer) Run() {
 
 	err := <-chanErr
 	fmt.Println(err.Error())
-}
-
-// handlers for client APIs
-func (s *NamingServer) isValidPathHandler(body PathRequest) (int, any) {
-	foundDir, foundFile, _ := s.root.PathExists(body.Path)
-	return http.StatusOK, SuccessResponse{foundDir || foundFile}
-}
-
-func (s *NamingServer) getStorageHandler(body PathRequest) (int, any) {
-	storageServer, err := s.root.GetFileStorage(body.Path)
-	if err != nil {
-		return http.StatusNotFound, err
-	}
-	return http.StatusOK, StorageInfoResponse{"127.0.0.1", storageServer.clientPort}
-}
-
-func (s *NamingServer) createDirectoryHandler(body PathRequest) (int, any) {
-	success, err := s.root.MakeDirectory(body.Path)
-	if err != nil {
-		return http.StatusNotFound, err
-	}
-	return http.StatusOK, SuccessResponse{success}
-}
-
-func (s *NamingServer) deleteHandler(body PathRequest) (int, any) {
-	deletedFiles, err := s.root.DeletePath(body.Path)
-	if err != nil {
-		return http.StatusNotFound, err
-	}
-	if len(deletedFiles) == 0 {
-		return http.StatusOK, SuccessResponse{false}
-	}
-
-	// notify the storage server asynchronously
-	for _, file := range deletedFiles {
-		go s.storageDeleteCommand(file)
-	}
-	return http.StatusOK, SuccessResponse{true}
-}
-
-func (s *NamingServer) createFileHandler(body PathRequest) (int, any) {
-	// allocate a storage server
-	s.lock.RLock()
-	if len(s.storageServers) == 0 {
-		// no storage server
-		s.lock.RUnlock()
-		err := &DFSException{IllegalStateException, "no storage servers are registered with the naming server."}
-		return http.StatusConflict, err
-	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(path.Clean(body.Path)))
-	hash := h.Sum32()
-	idx := int(hash % uint32(len(s.storageServers)))
-	storageServer := s.storageServers[idx]
-	s.lock.RUnlock()
-
-	success, err := s.root.CreateFile(body.Path, storageServer)
-	if err != nil {
-		return http.StatusNotFound, err
-	}
-	return http.StatusOK, SuccessResponse{success}
-}
-
-func (s *NamingServer) listDirHandler(body PathRequest) (int, any) {
-	files, err := s.root.ListDir(body.Path)
-	if err != nil {
-		return http.StatusNotFound, err
-	}
-	return http.StatusOK, ListFilesResponse{files}
-}
-
-func (s *NamingServer) isDirectoryHandler(body PathRequest) (int, any) {
-	foundDir, foundFile, err := s.root.PathExists(body.Path)
-	if err != nil {
-		return http.StatusNotFound, err
-	}
-	if !foundDir && !foundFile {
-		return http.StatusNotFound, &DFSException{FileNotFoundException, "the file/directory or parent directory does not exist."}
-	}
-
-	return http.StatusOK, SuccessResponse{foundDir}
-}
-
-// handler for registration API
-func (s *NamingServer) registerStorageHandler(body RegisterRequest) (int, any) {
-	// check if this storage server is already registered
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	for _, server := range s.storageServers {
-		if server.clientPort == body.ClientPort && server.commandPort == body.CommandPort {
-			// already registered
-			ex := DFSException{IllegalStateException, "This storage server is already registered."}
-			return http.StatusConflict, ex
-		}
-	}
-	server := &StorageServerInfo{
-		clientPort:  body.ClientPort,
-		commandPort: body.CommandPort,
-	}
-	s.storageServers = append(s.storageServers, server)
-	// register all of its files
-	success := s.root.RegisterFiles(body.Files, server)
-	response := make(map[string][]string)
-	response["files"] = make([]string, 0)
-	for i := range success {
-		if !success[i] {
-			// delete files that fail to register
-			response["files"] = append(response["files"], body.Files[i])
-		}
-	}
-	return http.StatusOK, response
-}
-
-// commands for storage servers
-func (s *NamingServer) storageCreateCommand(file *FileInfo) {
-	url := fmt.Sprintf("http://localhost:%d/storage_create", file.storageServer.commandPort)
-	body := bytes.NewReader([]byte(fmt.Sprintf(`{"path":"%s"}`, file.path)))
-	resp, err := http.Post(url, "application/json", body)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	var success SuccessResponse
-	err = json.Unmarshal(data, &success)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	if !success.Success {
-		fmt.Printf("storage_create failed for file %s (storage server %v)\n", file.path, file.storageServer)
-		return
-	}
-}
-func (s *NamingServer) storageDeleteCommand(file *FileInfo) {
-	url := fmt.Sprintf("http://localhost:%d/storage_delete", file.storageServer.commandPort)
-	body := bytes.NewReader([]byte(fmt.Sprintf(`{"path":"%s"}`, file.path)))
-	resp, err := http.Post(url, "application/json", body)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	var success SuccessResponse
-	err = json.Unmarshal(data, &success)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	if !success.Success {
-		fmt.Printf("storage_delete failed for file %s (storage server %v)\n", file.path, file.storageServer)
-		return
-	}
 }

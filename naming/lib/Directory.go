@@ -18,6 +18,16 @@ func pathToNames(pth string) []string {
 	return strings.Split(pth, "/")
 }
 
+type FSItem interface {
+	GetParentDir() *Directory
+	GetLock() *sync.RWMutex
+}
+
+type RLockedItem struct {
+	item  FSItem
+	count int
+}
+
 type Directory struct {
 	name           string
 	parent         *Directory
@@ -25,6 +35,20 @@ type Directory struct {
 	subFiles       []*FileInfo
 	namingServer   *NamingServer
 	lock           sync.RWMutex
+	// list of r-locked files or directories
+	rLockedItems    map[string]*RLockedItem
+	rLockedItemsMtx sync.Mutex
+	// list of w-locked files or directories
+	wLockedItems    map[string]FSItem
+	wLockedItemsMtx sync.Mutex
+}
+
+func (d *Directory) GetParentDir() *Directory {
+	return d.parent
+}
+
+func (d *Directory) GetLock() *sync.RWMutex {
+	return &d.lock
 }
 
 type FileInfo struct {
@@ -33,6 +57,14 @@ type FileInfo struct {
 	parent        *Directory
 	storageServer *StorageServerInfo
 	lock          sync.RWMutex
+}
+
+func (f *FileInfo) GetParentDir() *Directory {
+	return f.parent
+}
+
+func (f *FileInfo) GetLock() *sync.RWMutex {
+	return &f.lock
 }
 
 func (d *Directory) lockPath(names []string, readonly bool) *Directory {
@@ -333,46 +365,93 @@ func (d *Directory) ListDir(pth string) ([]string, *DFSException) {
 }
 
 func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException {
+	pth = path.Clean(pth)
 	names := pathToNames(pth)
 	if len(names) == 0 {
 		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
+	var fsItem FSItem = nil // the file or directory to be locked
 	if len(names) == 1 {
-		// lock the root directory
-		if readonly {
-			d.lock.RLock()
+		// request to lock the root directory
+		fsItem = d
+	} else {
+		// try to find fsItem
+		itemName := names[len(names)-1]
+		parent := d.lockPath(names[:len(names)-1], true)
+		if parent == nil {
+			return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
+		}
+		for _, dir := range parent.subDirectories {
+			if dir.name == itemName {
+				fsItem = dir
+				break
+			}
+		}
+		for _, file := range parent.subFiles {
+			if file.name == itemName {
+				fsItem = file
+				break
+			}
+		}
+		if fsItem == nil {
+			d.unlockPath(parent, true)
+			return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
+		}
+	}
+	if readonly {
+		fsItem.GetLock().RLock()
+		// add it to rLockedItems table
+		d.rLockedItemsMtx.Lock()
+		item, exists := d.rLockedItems[pth]
+		if exists {
+			item.count++
 		} else {
-			d.lock.Lock()
+			d.rLockedItems[pth] = &RLockedItem{fsItem, 1}
 		}
-		return nil
+		d.rLockedItemsMtx.Unlock()
+	} else {
+		fsItem.GetLock().Lock()
+		// add it to wLockedItems table
+		d.wLockedItemsMtx.Lock()
+		d.wLockedItems[pth] = fsItem
+		d.wLockedItemsMtx.Unlock()
 	}
-	itemName := names[len(names)-1]
-	parent := d.lockPath(names[:len(names)-1], true)
-	if parent == nil {
-		return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
+	return nil
+}
+
+func (d *Directory) UnlockFileOrDirectory(pth string, readonly bool) *DFSException {
+	if len(pathToNames(pth)) == 0 {
+		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
-	for _, dir := range parent.subDirectories {
-		if dir.name == itemName {
-			if readonly {
-				dir.lock.RLock()
-			} else {
-				dir.lock.Lock()
-			}
-			return nil
+	pth = path.Clean(pth)
+	if readonly {
+		d.rLockedItemsMtx.Lock()
+		defer d.rLockedItemsMtx.Unlock()
+		entry, exists := d.rLockedItems[pth]
+		if !exists {
+			return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is not r-locked", pth)}
 		}
-	}
-	for _, file := range parent.subFiles {
-		if file.name == itemName {
-			if readonly {
-				file.lock.RLock()
-			} else {
-				file.lock.Lock()
-			}
-			return nil
+		fsItem := entry.item
+		entry.count--
+		if entry.count == 0 {
+			delete(d.rLockedItems, pth)
 		}
+		parent := fsItem.GetParentDir()
+		fsItem.GetLock().RUnlock()
+		d.unlockPath(parent, true)
+	} else {
+		d.wLockedItemsMtx.Lock()
+		defer d.wLockedItemsMtx.Unlock()
+		fsItem, exists := d.wLockedItems[pth]
+		if !exists {
+			return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is not w-locked", pth)}
+		}
+		delete(d.wLockedItems, pth)
+		parent := fsItem.GetParentDir()
+		fsItem.GetLock().Unlock()
+		d.unlockPath(parent, true)
 	}
-	d.unlockPath(parent, true)
-	return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
+	return nil
 }
 
 func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInfo) []bool {
