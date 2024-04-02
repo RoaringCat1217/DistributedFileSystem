@@ -48,6 +48,7 @@ checkpoint: build
 # delete all class files and docs, leaving only source
 clean:
 	rm -rf $(SRCFILES:.java=.class) $(TESTFILES:.java=.class) $(DOCDIR) $(DOCDIR)-test
+	rm -rf out
 
 
 # generate documentation for the package of interest

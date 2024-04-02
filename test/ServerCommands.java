@@ -41,7 +41,7 @@ public class ServerCommands {
      * with the storage server.
      * TODO: change this string to start your first storage server using the above specification.
      */
-    public static final String storage0Command = "./out/storage 8050 8060 9000 /Users/yifanlin/Desktop/MSIN/14736-DS/Lab3/s24-lab3-stilllearninggo/tmp";
+    public static final String storage0Command = "./out/storage 8050 8060 9000 ./tmp";
 
     /**
      * Test code uses this String to start the second storage server as a new Process.
