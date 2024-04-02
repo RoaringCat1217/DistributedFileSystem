@@ -110,7 +110,7 @@ func (fs *FileSystem) CreateFile(path string) (bool, *DFSException) {
 	parentPath := filepath.Join(filePath, "../")
 	// parent directory must exist
 	dirInfo, err := os.Stat(parentPath)
-	if err == nil {
+	if err != nil {
 		if os.IsNotExist(err) {
 			err = os.MkdirAll(parentPath, 0777)
 			if err != nil {
@@ -119,9 +119,10 @@ func (fs *FileSystem) CreateFile(path string) (bool, *DFSException) {
 		} else {
 			return false, &DFSException{IOException, fmt.Sprintf("Error when opening parent directory: %s", err.Error())}
 		}
-	}
-	if !dirInfo.IsDir() {
-		return false, &DFSException{Type: IllegalArgumentException, Msg: "parent directory does not exist"}
+	} else {
+		if !dirInfo.IsDir() {
+			return false, &DFSException{Type: IllegalArgumentException, Msg: "parent directory does not exist"}
+		}
 	}
 	// the file must not exist for now
 	_, err = os.Stat(filePath)
@@ -142,6 +143,9 @@ func (fs *FileSystem) CreateFile(path string) (bool, *DFSException) {
 func (fs *FileSystem) DeleteFile(path string) (bool, *DFSException) {
 	if path == "" {
 		return false, &DFSException{IllegalArgumentException, "Path is invalid"}
+	}
+	if path == "/" {
+		return false, nil
 	}
 	filePath := filepath.Join(fs.directory, path)
 	_, err := os.Stat(filePath)

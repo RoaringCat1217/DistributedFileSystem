@@ -33,7 +33,7 @@ public class ServerCommands {
      *
      * TODO: change this string to start your own naming server using the above specification.
      */
-    public static final String namingCommand = "go run naming/main.go 8080 8090";
+    public static final String namingCommand = "./out/naming 8081 8091";
 
     /**
      * Test code uses this String to start the first storage server as a new Process.
@@ -41,7 +41,7 @@ public class ServerCommands {
      * with the storage server.
      * TODO: change this string to start your first storage server using the above specification.
      */
-    public static final String storage0Command = "go run storage/main.go /tmp/dist-systems-0 localhost:8090 7000 7001";
+    public static final String storage0Command = "./out/storage 8050 8060 9000 /Users/yifanlin/Desktop/MSIN/14736-DS/Lab3/s24-lab3-stilllearninggo/tmp";
 
     /**
      * Test code uses this String to start the second storage server as a new Process.
