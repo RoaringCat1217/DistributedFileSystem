@@ -28,8 +28,10 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 		servicePort:      servicePort,
 		registrationPort: registrationPort,
 		root: &Directory{
-			name:   "",
-			parent: nil,
+			name:         "",
+			parent:       nil,
+			rLockedItems: make(map[string]*RLockedItem),
+			wLockedItems: make(map[string]FSItem),
 		},
 		service:      gin.Default(),
 		registration: gin.Default(),
@@ -107,7 +109,11 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 			return
 		}
 		statusCode, response := namingServer.lockHandler(request)
-		ctx.JSON(statusCode, response)
+		if response != nil {
+			ctx.JSON(statusCode, response)
+		} else {
+			ctx.Status(statusCode)
+		}
 	})
 	namingServer.service.POST("/unlock", func(ctx *gin.Context) {
 		var request LockRequest
@@ -116,7 +122,11 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 			return
 		}
 		statusCode, response := namingServer.unlockHandler(request)
-		ctx.JSON(statusCode, response)
+		if response != nil {
+			ctx.JSON(statusCode, response)
+		} else {
+			ctx.Status(statusCode)
+		}
 	})
 
 	// register registration API
