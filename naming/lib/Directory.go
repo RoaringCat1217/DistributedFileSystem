@@ -67,20 +67,41 @@ func (f *FileInfo) GetLock() *sync.RWMutex {
 	return &f.lock
 }
 
-func (d *Directory) lockPath(names []string, readonly bool) *Directory {
+func (d *Directory) walkPath(names []string) *Directory {
 	if len(names) == 0 {
 		return nil
 	}
 	if names[0] != "" {
 		return nil
 	}
-	var curr *Directory = nil
-	final := names[len(names)-1]
-	for _, name := range names[:len(names)-1] {
-		if curr == nil {
-			curr = d
-			continue
+	curr := d
+	for _, name := range names[1:] {
+		found := false
+		for _, dir := range curr.subDirectories {
+			if dir.name == name {
+				found = true
+				curr = dir
+				break
+			}
 		}
+		if !found {
+			// cannot find a directory in the path
+			return nil
+		}
+	}
+	return curr
+}
+
+// lockPath - rlock every directory in a path
+func (d *Directory) lockPath(names []string) *Directory {
+	if len(names) == 0 {
+		return nil
+	}
+	if names[0] != "" {
+		return nil
+	}
+	curr := d
+	for _, name := range names[1:] {
 		curr.lock.RLock()
 		found := false
 		for _, dir := range curr.subDirectories {
@@ -92,48 +113,20 @@ func (d *Directory) lockPath(names []string, readonly bool) *Directory {
 		}
 		if !found {
 			// cannot find a directory in the path
-			d.unlockPath(curr, true)
+			d.unlockPath(curr)
 			return nil
 		}
 	}
-	// curr is the parent of final
-	if curr == nil {
-		if readonly {
-			d.lock.RLock()
-		} else {
-			d.lock.Lock()
-		}
-		return d
-	}
 	curr.lock.RLock()
-	for _, dir := range curr.subDirectories {
-		if dir.name == final {
-			if readonly {
-				dir.lock.RLock()
-			} else {
-				dir.lock.Lock()
-			}
-			return dir
-		}
-	}
-	// cannot find final
-	d.unlockPath(curr, true)
-	return nil
+	return curr
 }
 
-func (d *Directory) unlockPath(dir *Directory, readonly bool) {
+func (d *Directory) unlockPath(dir *Directory) {
 	if dir == nil {
 		return
 	}
-	parent := dir.parent
-	if readonly {
-		dir.lock.RUnlock()
-	} else {
-		dir.lock.Unlock()
-	}
-	dir = parent
 	for dir != nil {
-		parent = dir.parent
+		parent := dir.parent
 		dir.lock.RUnlock()
 		dir = parent
 	}
@@ -148,11 +141,10 @@ func (d *Directory) PathExists(pth string) (bool, bool, *DFSException) {
 		// pth is the root directory
 		return true, false, nil
 	}
-	parent := d.lockPath(names[:len(names)-1], true)
+	parent := d.walkPath(names[:len(names)-1])
 	if parent == nil {
 		return false, false, nil
 	}
-	defer d.unlockPath(parent, true)
 
 	itemName := names[len(names)-1]
 	foundDir := false
@@ -181,12 +173,11 @@ func (d *Directory) MakeDirectory(pth string) (bool, *DFSException) {
 		return false, nil
 	}
 
-	// wlock parent directory
-	parent := d.lockPath(names[:len(names)-1], false)
+	// find parent directory
+	parent := d.walkPath(names[:len(names)-1])
 	if parent == nil {
 		return false, &DFSException{FileNotFoundException, "the parent directory does not exist."}
 	}
-	defer d.unlockPath(parent, false)
 
 	newDirName := names[len(names)-1]
 	// check if newDirName conflicts with existing files or directories
@@ -224,11 +215,10 @@ func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSExceptio
 	}
 	// rlock parent
 	fileName := names[len(names)-1]
-	parent := d.lockPath(names[:len(names)-1], true)
+	parent := d.walkPath(names[:len(names)-1])
 	if parent == nil {
 		return nil, &DFSException{FileNotFoundException, fmt.Sprintf("cannot find file %s.", pth)}
 	}
-	defer d.unlockPath(parent, true)
 
 	for _, file := range parent.subFiles {
 		if file.name == fileName {
@@ -248,11 +238,10 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (bo
 		return false, nil
 	}
 	newFileName := names[len(names)-1]
-	parent := d.lockPath(names[:len(names)-1], false)
+	parent := d.walkPath(names[:len(names)-1])
 	if parent == nil {
 		return false, &DFSException{FileNotFoundException, "the parent directory does not exist."}
 	}
-	defer d.unlockPath(parent, false)
 
 	conflict := false
 	for _, dir := range parent.subDirectories {
@@ -293,11 +282,10 @@ func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
 		return make([]*FileInfo, 0), nil
 	}
 	deleted := names[len(names)-1]
-	parent := d.lockPath(names[:len(names)-1], false)
+	parent := d.walkPath(names[:len(names)-1])
 	if parent == nil {
 		return make([]*FileInfo, 0), &DFSException{FileNotFoundException, fmt.Sprintf("path %s does not exist.", pth)}
 	}
-	defer d.unlockPath(parent, false)
 
 	// find the directory or file to be deleted
 	var deletedDir *Directory = nil
@@ -349,11 +337,11 @@ func (d *Directory) ListDir(pth string) ([]string, *DFSException) {
 	if len(names) == 0 {
 		return nil, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
-	dir := d.lockPath(names, true) // directory to be listed
+	dir := d.walkPath(names) // directory to be listed
 	if dir == nil {
 		return nil, &DFSException{FileNotFoundException, fmt.Sprintf("Cannot find directory %s.", pth)}
 	}
-	defer d.unlockPath(dir, true)
+
 	itemNames := make([]string, 0)
 	for _, file := range dir.subFiles {
 		itemNames = append(itemNames, file.name)
@@ -377,7 +365,7 @@ func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException
 	} else {
 		// try to find fsItem
 		itemName := names[len(names)-1]
-		parent := d.lockPath(names[:len(names)-1], true)
+		parent := d.lockPath(names[:len(names)-1])
 		if parent == nil {
 			return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
 		}
@@ -394,7 +382,7 @@ func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException
 			}
 		}
 		if fsItem == nil {
-			d.unlockPath(parent, true)
+			d.unlockPath(parent)
 			return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
 		}
 	}
@@ -438,7 +426,7 @@ func (d *Directory) UnlockFileOrDirectory(pth string, readonly bool) *DFSExcepti
 		}
 		parent := fsItem.GetParentDir()
 		fsItem.GetLock().RUnlock()
-		d.unlockPath(parent, true)
+		d.unlockPath(parent)
 	} else {
 		d.wLockedItemsMtx.Lock()
 		defer d.wLockedItemsMtx.Unlock()
@@ -449,7 +437,7 @@ func (d *Directory) UnlockFileOrDirectory(pth string, readonly bool) *DFSExcepti
 		delete(d.wLockedItems, pth)
 		parent := fsItem.GetParentDir()
 		fsItem.GetLock().Unlock()
-		d.unlockPath(parent, true)
+		d.unlockPath(parent)
 	}
 	return nil
 }
