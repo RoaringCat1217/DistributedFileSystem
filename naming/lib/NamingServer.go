@@ -30,6 +30,7 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 		root: &Directory{
 			name:         "",
 			parent:       nil,
+			lock:         NewFIFORWMutex(),
 			rLockedItems: make(map[string]*RLockedItem),
 			wLockedItems: make(map[string]FSItem),
 		},

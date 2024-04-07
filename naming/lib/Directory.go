@@ -20,7 +20,7 @@ func pathToNames(pth string) []string {
 
 type FSItem interface {
 	GetParentDir() *Directory
-	GetLock() *sync.RWMutex
+	GetLock() *FIFORWMutex
 }
 
 type RLockedItem struct {
@@ -34,7 +34,7 @@ type Directory struct {
 	subDirectories []*Directory
 	subFiles       []*FileInfo
 	namingServer   *NamingServer
-	lock           sync.RWMutex
+	lock           *FIFORWMutex
 	// list of r-locked files or directories
 	rLockedItems    map[string]*RLockedItem
 	rLockedItemsMtx sync.Mutex
@@ -47,8 +47,8 @@ func (d *Directory) GetParentDir() *Directory {
 	return d.parent
 }
 
-func (d *Directory) GetLock() *sync.RWMutex {
-	return &d.lock
+func (d *Directory) GetLock() *FIFORWMutex {
+	return d.lock
 }
 
 type FileInfo struct {
@@ -56,15 +56,15 @@ type FileInfo struct {
 	path          string
 	parent        *Directory
 	storageServer *StorageServerInfo
-	lock          sync.RWMutex
+	lock          *FIFORWMutex
 }
 
 func (f *FileInfo) GetParentDir() *Directory {
 	return f.parent
 }
 
-func (f *FileInfo) GetLock() *sync.RWMutex {
-	return &f.lock
+func (f *FileInfo) GetLock() *FIFORWMutex {
+	return f.lock
 }
 
 func (d *Directory) walkPath(names []string) *Directory {
@@ -203,6 +203,7 @@ func (d *Directory) MakeDirectory(pth string) (bool, *DFSException) {
 	newDir := &Directory{
 		name:   newDirName,
 		parent: parent,
+		lock:   NewFIFORWMutex(),
 	}
 	parent.subDirectories = append(parent.subDirectories, newDir)
 	return true, nil
@@ -265,6 +266,7 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (bo
 		path:          path.Clean(pth),
 		parent:        parent,
 		storageServer: storageServer,
+		lock:          NewFIFORWMutex(),
 	}
 	parent.subFiles = append(parent.subFiles, newFile)
 	// notify storage server
@@ -294,6 +296,7 @@ func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
 	for i, dir := range parent.subDirectories {
 		if dir.name == deleted {
 			deletedDir = dir
+			dir.lock.Destroy()
 			index = i
 			break
 		}
@@ -301,6 +304,7 @@ func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
 	for i, file := range parent.subFiles {
 		if file.name == deleted {
 			deletedFiles = append(deletedFiles, file)
+			file.lock.Destroy()
 			index = i
 			break
 		}
@@ -317,8 +321,10 @@ func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
 		}
 		for _, file := range currDir.subFiles {
 			deletedFiles = append(deletedFiles, file)
+			file.lock.Destroy()
 		}
 		for _, dir := range currDir.subDirectories {
+			dir.lock.Destroy()
 			findDeletedFilesDFS(dir)
 		}
 	}
@@ -491,6 +497,7 @@ func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInf
 				newDir := &Directory{
 					name:   name,
 					parent: curr,
+					lock:   NewFIFORWMutex(),
 				}
 				curr.subDirectories = append(curr.subDirectories, newDir)
 				curr = newDir
@@ -523,6 +530,7 @@ func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInf
 			path:          path.Clean(pth),
 			parent:        curr,
 			storageServer: storageServer,
+			lock:          NewFIFORWMutex(),
 		}
 		curr.subFiles = append(curr.subFiles, file)
 		success = append(success, true)
