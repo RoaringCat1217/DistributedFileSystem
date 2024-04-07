@@ -37,7 +37,6 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 		service:      gin.Default(),
 		registration: gin.Default(),
 	}
-	namingServer.root.namingServer = &namingServer
 
 	// register client APIs
 	namingServer.service.POST("/is_valid_path", func(ctx *gin.Context) {

@@ -1,9 +1,9 @@
 package naming
 
 import (
-	"hash/fnv"
+	"math/rand"
 	"net/http"
-	"path"
+	"sync"
 )
 
 // handlers for client APIs
@@ -37,10 +37,17 @@ func (s *NamingServer) deleteHandler(body PathRequest) (int, any) {
 		return http.StatusOK, SuccessResponse{false}
 	}
 
-	// notify the storage server asynchronously
+	// notify the storage servers asynchronously
+	var wg sync.WaitGroup
 	for _, file := range deletedFiles {
-		go s.storageDeleteCommand(file)
+		for _, storageServer := range file.storageServers {
+			file := file
+			storageServer := storageServer
+			wg.Add(1)
+			go s.storageDeleteCommand(file, storageServer, &wg)
+		}
 	}
+	wg.Wait()
 	return http.StatusOK, SuccessResponse{true}
 }
 
@@ -53,16 +60,19 @@ func (s *NamingServer) createFileHandler(body PathRequest) (int, any) {
 		err := &DFSException{IllegalStateException, "no storage servers are registered with the naming server."}
 		return http.StatusConflict, err
 	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(path.Clean(body.Path)))
-	hash := h.Sum32()
-	idx := int(hash % uint32(len(s.storageServers)))
+	// allocate a random storage server
+	idx := rand.Intn(len(s.storageServers))
 	storageServer := s.storageServers[idx]
 	s.lock.RUnlock()
 
-	success, err := s.root.CreateFile(body.Path, storageServer)
+	file, err := s.root.CreateFile(body.Path, storageServer)
 	if err != nil {
 		return http.StatusNotFound, err
+	}
+	success := file != nil
+	if success {
+		// notify the storage server
+		s.storageCreateCommand(file)
 	}
 	return http.StatusOK, SuccessResponse{success}
 }
@@ -87,9 +97,56 @@ func (s *NamingServer) isDirectoryHandler(body PathRequest) (int, any) {
 }
 
 func (s *NamingServer) lockHandler(body LockRequest) (int, any) {
-	err := s.root.LockFileOrDirectory(body.Path, !body.Exclusive)
+	fsItem, err := s.root.LockFileOrDirectory(body.Path, !body.Exclusive)
 	if err != nil {
 		return http.StatusNotFound, err
+	}
+	if file, ok := fsItem.(*FileInfo); ok {
+		// handles replication for the file
+		file.rCountMtx.Lock()
+		defer file.rCountMtx.Unlock()
+		if body.Exclusive {
+			// delete all except one replicas
+			file.rCount = 0
+			var wg sync.WaitGroup
+			for _, storageServer := range file.storageServers[1:] {
+				storageServer := storageServer
+				wg.Add(1)
+				go s.storageDeleteCommand(file, storageServer, &wg)
+			}
+			wg.Wait()
+		} else {
+			file.rCount++
+			if file.rCount >= 20 {
+				file.rCount -= 20
+				// have one more replica, if possible
+				s.lock.RLock()
+				candidates := make([]*StorageServerInfo, 0)
+				for _, storageServer := range s.storageServers {
+					exists := false
+					for _, currServer := range file.storageServers {
+						if storageServer == currServer {
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						candidates = append(candidates, storageServer)
+					}
+				}
+				s.lock.RUnlock()
+				if len(candidates) > 0 {
+					// choose a random storage server to replicate
+					dst := candidates[rand.Intn(len(candidates))]
+					// choose a random storage server as source
+					src := file.storageServers[rand.Intn(len(file.storageServers))]
+					success := s.storageCopyCommand(file, dst, src)
+					if success {
+						file.storageServers = append(file.storageServers, dst)
+					}
+				}
+			}
+		}
 	}
 	return http.StatusOK, nil
 }

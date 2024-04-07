@@ -2,6 +2,7 @@ package naming
 
 import (
 	"fmt"
+	"math/rand"
 	"path"
 	"strings"
 	"sync"
@@ -33,7 +34,6 @@ type Directory struct {
 	parent         *Directory
 	subDirectories []*Directory
 	subFiles       []*FileInfo
-	namingServer   *NamingServer
 	lock           *FIFORWMutex
 	// list of r-locked files or directories
 	rLockedItems    map[string]*RLockedItem
@@ -52,11 +52,14 @@ func (d *Directory) GetLock() *FIFORWMutex {
 }
 
 type FileInfo struct {
-	name          string
-	path          string
-	parent        *Directory
-	storageServer *StorageServerInfo
-	lock          *FIFORWMutex
+	name   string
+	path   string
+	parent *Directory
+	lock   *FIFORWMutex
+	// fields used for replication
+	rCount         int
+	rCountMtx      sync.Mutex
+	storageServers []*StorageServerInfo
 }
 
 func (f *FileInfo) GetParentDir() *Directory {
@@ -223,25 +226,29 @@ func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSExceptio
 
 	for _, file := range parent.subFiles {
 		if file.name == fileName {
-			return file.storageServer, nil
+			// choose a random storage server
+			file.rCountMtx.Lock()
+			storageServer := file.storageServers[rand.Intn(len(file.storageServers))]
+			file.rCountMtx.Unlock()
+			return storageServer, nil
 		}
 	}
 	return nil, &DFSException{FileNotFoundException, fmt.Sprintf("cannot find file %s.", pth)}
 }
 
-func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (bool, *DFSException) {
+func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*FileInfo, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
-		return false, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+		return nil, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
 	if len(names) == 1 {
 		// rejects root directory
-		return false, nil
+		return nil, nil
 	}
 	newFileName := names[len(names)-1]
 	parent := d.walkPath(names[:len(names)-1])
 	if parent == nil {
-		return false, &DFSException{FileNotFoundException, "the parent directory does not exist."}
+		return nil, &DFSException{FileNotFoundException, "the parent directory does not exist."}
 	}
 
 	conflict := false
@@ -258,20 +265,18 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (bo
 		}
 	}
 	if conflict {
-		return false, nil
+		return nil, nil
 	}
 
 	newFile := &FileInfo{
-		name:          newFileName,
-		path:          path.Clean(pth),
-		parent:        parent,
-		storageServer: storageServer,
-		lock:          NewFIFORWMutex(),
+		name:   newFileName,
+		path:   path.Clean(pth),
+		parent: parent,
+		lock:   NewFIFORWMutex(),
 	}
+	newFile.storageServers = append(newFile.storageServers, storageServer)
 	parent.subFiles = append(parent.subFiles, newFile)
-	// notify storage server
-	d.namingServer.storageCreateCommand(newFile)
-	return true, nil
+	return newFile, nil
 }
 
 func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
@@ -358,11 +363,11 @@ func (d *Directory) ListDir(pth string) ([]string, *DFSException) {
 	return itemNames, nil
 }
 
-func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException {
+func (d *Directory) LockFileOrDirectory(pth string, readonly bool) (FSItem, *DFSException) {
 	pth = path.Clean(pth)
 	names := pathToNames(pth)
 	if len(names) == 0 {
-		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+		return nil, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
 	var fsItem FSItem = nil // the file or directory to be locked
 	if len(names) == 1 {
@@ -373,7 +378,7 @@ func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException
 		itemName := names[len(names)-1]
 		parent := d.lockPath(names[:len(names)-1])
 		if parent == nil {
-			return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
+			return nil, &DFSException{FileNotFoundException, "the file/directory cannot be found"}
 		}
 		for _, dir := range parent.subDirectories {
 			if dir.name == itemName {
@@ -389,7 +394,7 @@ func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException
 		}
 		if fsItem == nil {
 			d.unlockPath(parent)
-			return &DFSException{FileNotFoundException, "the file/directory cannot be found"}
+			return nil, &DFSException{FileNotFoundException, "the file/directory cannot be found"}
 		}
 	}
 	if readonly {
@@ -410,7 +415,7 @@ func (d *Directory) LockFileOrDirectory(pth string, readonly bool) *DFSException
 		d.wLockedItems[pth] = fsItem
 		d.wLockedItemsMtx.Unlock()
 	}
-	return nil
+	return fsItem, nil
 }
 
 func (d *Directory) UnlockFileOrDirectory(pth string, readonly bool) *DFSException {
@@ -526,12 +531,12 @@ func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInf
 		}
 		// register the file
 		file := &FileInfo{
-			name:          fileName,
-			path:          path.Clean(pth),
-			parent:        curr,
-			storageServer: storageServer,
-			lock:          NewFIFORWMutex(),
+			name:   fileName,
+			path:   path.Clean(pth),
+			parent: curr,
+			lock:   NewFIFORWMutex(),
 		}
+		file.storageServers = append(file.storageServers, storageServer)
 		curr.subFiles = append(curr.subFiles, file)
 		success = append(success, true)
 	}
