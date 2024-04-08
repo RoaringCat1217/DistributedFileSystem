@@ -70,6 +70,23 @@ func (f *FileInfo) GetLock() *FIFORWMutex {
 	return f.lock
 }
 
+func (d *Directory) GetPath() string {
+	names := make([]string, 0)
+	curr := d
+	for curr != nil {
+		names = append(names, curr.name)
+		curr = curr.parent
+	}
+	i := 0
+	j := len(names) - 1
+	for i < j {
+		names[i], names[j] = names[j], names[i]
+		i++
+		j--
+	}
+	return strings.Join(names, "/")
+}
+
 func (d *Directory) walkPath(names []string) *Directory {
 	if len(names) == 0 {
 		return nil
@@ -279,24 +296,24 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*F
 	return newFile, nil
 }
 
-func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
+func (d *Directory) DeletePath(pth string) (FSItem, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
-		return make([]*FileInfo, 0), &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
+		return nil, &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
 	}
 	if len(names) == 1 {
 		// cannot delete root directory
-		return make([]*FileInfo, 0), nil
+		return nil, nil
 	}
 	deleted := names[len(names)-1]
 	parent := d.walkPath(names[:len(names)-1])
 	if parent == nil {
-		return make([]*FileInfo, 0), &DFSException{FileNotFoundException, fmt.Sprintf("path %s does not exist.", pth)}
+		return nil, &DFSException{FileNotFoundException, fmt.Sprintf("path %s does not exist.", pth)}
 	}
 
 	// find the directory or file to be deleted
 	var deletedDir *Directory = nil
-	var deletedFiles []*FileInfo = nil
+	var deletedFile *FileInfo = nil
 	var index int
 	for i, dir := range parent.subDirectories {
 		if dir.name == deleted {
@@ -308,39 +325,22 @@ func (d *Directory) DeletePath(pth string) ([]*FileInfo, *DFSException) {
 	}
 	for i, file := range parent.subFiles {
 		if file.name == deleted {
-			deletedFiles = append(deletedFiles, file)
+			deletedFile = file
 			file.lock.Destroy()
 			index = i
 			break
 		}
 	}
-	if deletedDir == nil && deletedFiles == nil {
-		return make([]*FileInfo, 0), &DFSException{FileNotFoundException, fmt.Sprintf("path %s does not exist.", pth)}
+	if deletedDir == nil && deletedFile == nil {
+		return nil, &DFSException{FileNotFoundException, fmt.Sprintf("path %s does not exist.", pth)}
 	}
-
-	// find all files to be deleted
-	var findDeletedFilesDFS func(*Directory)
-	findDeletedFilesDFS = func(currDir *Directory) {
-		if currDir == nil {
-			return
-		}
-		for _, file := range currDir.subFiles {
-			deletedFiles = append(deletedFiles, file)
-			file.lock.Destroy()
-		}
-		for _, dir := range currDir.subDirectories {
-			dir.lock.Destroy()
-			findDeletedFilesDFS(dir)
-		}
-	}
-	findDeletedFilesDFS(deletedDir)
 
 	if deletedDir != nil {
 		parent.subDirectories = append(parent.subDirectories[:index], parent.subDirectories[index+1:]...)
-	} else {
-		parent.subFiles = append(parent.subFiles[:index], parent.subFiles[index+1:]...)
+		return deletedDir, nil
 	}
-	return deletedFiles, nil
+	parent.subFiles = append(parent.subFiles[:index], parent.subFiles[index+1:]...)
+	return deletedFile, nil
 }
 
 func (d *Directory) ListDir(pth string) ([]string, *DFSException) {

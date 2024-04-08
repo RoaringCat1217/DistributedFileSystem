@@ -34,10 +34,10 @@ func (s *NamingServer) storageCreateCommand(file *FileInfo) {
 		return
 	}
 }
-func (s *NamingServer) storageDeleteCommand(file *FileInfo, storageServer *StorageServerInfo, wg *sync.WaitGroup) {
+func (s *NamingServer) storageDeleteCommand(path string, storageServer *StorageServerInfo, wg *sync.WaitGroup) {
 	defer wg.Done()
 	url := fmt.Sprintf("http://localhost:%d/storage_delete", storageServer.commandPort)
-	body := bytes.NewReader([]byte(fmt.Sprintf(`{"path":"%s"}`, file.path)))
+	body := bytes.NewReader([]byte(fmt.Sprintf(`{"path":"%s"}`, path)))
 	resp, err := http.Post(url, "application/json", body)
 	if err != nil {
 		fmt.Println(err.Error())
@@ -55,7 +55,7 @@ func (s *NamingServer) storageDeleteCommand(file *FileInfo, storageServer *Stora
 		return
 	}
 	if !success.Success {
-		fmt.Printf("storage_delete failed for file %s (storage server %v)\n", file.path, storageServer)
+		fmt.Printf("storage_delete failed for file %s (storage server %v)\n", path, storageServer)
 		return
 	}
 }

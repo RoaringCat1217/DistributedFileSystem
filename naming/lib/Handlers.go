@@ -29,22 +29,30 @@ func (s *NamingServer) createDirectoryHandler(body PathRequest) (int, any) {
 }
 
 func (s *NamingServer) deleteHandler(body PathRequest) (int, any) {
-	deletedFiles, err := s.root.DeletePath(body.Path)
+	deletedItem, err := s.root.DeletePath(body.Path)
 	if err != nil {
 		return http.StatusNotFound, err
 	}
-	if len(deletedFiles) == 0 {
+	if deletedItem == nil {
 		return http.StatusOK, SuccessResponse{false}
 	}
 
-	// notify the storage servers asynchronously
 	var wg sync.WaitGroup
-	for _, file := range deletedFiles {
-		for _, storageServer := range file.storageServers {
-			file := file
+	if deletedFile, ok := deletedItem.(*FileInfo); ok {
+		// notify the storage servers asynchronously
+		for _, storageServer := range deletedFile.storageServers {
 			storageServer := storageServer
 			wg.Add(1)
-			go s.storageDeleteCommand(file, storageServer, &wg)
+			go s.storageDeleteCommand(deletedFile.path, storageServer, &wg)
+		}
+	} else {
+		deletedDir := deletedItem.(*Directory)
+		s.lock.RLock()
+		defer s.lock.RUnlock()
+		for _, storageServer := range s.storageServers {
+			storageServer := storageServer
+			wg.Add(1)
+			go s.storageDeleteCommand(deletedDir.GetPath(), storageServer, &wg)
 		}
 	}
 	wg.Wait()
@@ -112,7 +120,7 @@ func (s *NamingServer) lockHandler(body LockRequest) (int, any) {
 			for _, storageServer := range file.storageServers[1:] {
 				storageServer := storageServer
 				wg.Add(1)
-				go s.storageDeleteCommand(file, storageServer, &wg)
+				go s.storageDeleteCommand(file.path, storageServer, &wg)
 			}
 			wg.Wait()
 		} else {
