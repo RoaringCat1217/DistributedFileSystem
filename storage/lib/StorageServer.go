@@ -166,48 +166,62 @@ func (s *StorageServer) handleDelete(request DeleteRequest) (int, any) {
 
 // handleCopy handles the HTTP request for copying a file from another storage server.
 func (s *StorageServer) handleCopy(request CopyRequest) (int, any) {
-	/* ignore it for this checkpoint
-	// Construct the source URL from the request information
-	sourceURL := fmt.Sprintf("http://%s:%d/storage_read", request.SourceAddr, request.SourcePort)
-
-	// Create the JSON payload for the POST request
-	payload, err := json.Marshal(map[string]any{"path": request.Path, "offset": 0, "length": -1})
-	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to encode request payload"}
+	// first get the size of the file
+	if request.Path == "" {
+		return http.StatusNotFound, DFSException{IllegalArgumentException, "Path cannot be empty"}
 	}
-
-	// Execute the POST request to the source server
-	resp, err := http.Post(sourceURL, "application/json", bytes.NewReader(payload))
+	log.Printf("Sending size request...")
+	url := fmt.Sprintf("http://%s:%d/storage_size", request.SourceAddr, request.SourcePort)
+	log.Println(url)
+	sizeReq := SizeRequest{request.Path}
+	payload, err := json.Marshal(sizeReq)
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to fetch data from source server"}
+		log.Println(1)
+		return http.StatusNotFound, DFSException{Type: IOException, Msg: err.Error()}
 	}
-	defer resp.Body.Close()
-
-	// Check the response status code
+	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return http.StatusNotFound, DFSException{Type: IOException, Msg: err.Error()}
+	}
 	if resp.StatusCode != http.StatusOK {
-		var exception DFSException
-		if err := json.NewDecoder(resp.Body).Decode(&exception); err != nil {
-			return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to decode error from source server"}
-		}
-		return resp.StatusCode, exception
+		return http.StatusNotFound, DFSException{Type: FileNotFoundException, Msg: "File not found"}
 	}
-
-	// Read the data from the response
-	data, err := io.ReadAll(resp.Body)
+	var sizeResp SizeResponse
+	err = json.NewDecoder(resp.Body).Decode(&sizeResp)
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: "Failed to read data from source server response"}
+		return http.StatusNotFound, DFSException{Type: IOException, Msg: err.Error()}
 	}
 
-	// Write the data to a file in the destination directory
-	err = s.fileSystem.WriteFile(request.Path, data, 0)
+	// Now request the entire file
+	log.Printf("Sending read request...")
+	url = fmt.Sprintf("http://%s:%d/storage_read", request.SourceAddr, request.SourcePort)
+	readReq := ReadRequest{
+		Path:   request.Path,
+		Offset: 0,
+		Length: sizeResp.Size,
+	}
+	payload, err = json.Marshal(readReq)
 	if err != nil {
-		return http.StatusInternalServerError, DFSException{Type: IOException, Msg: err.Error()}
+		return http.StatusNotFound, DFSException{Type: IOException, Msg: err.Error()}
 	}
-
-	// Return success response
-	return http.StatusOK, SuccessResponse{Success: true}
-	*/
-	return 0, nil
+	resp, err = http.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return http.StatusNotFound, DFSException{Type: IOException, Msg: err.Error()}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return http.StatusNotFound, DFSException{Type: IOException, Msg: "File not found"}
+	}
+	var readResp ReadResponse
+	err = json.NewDecoder(resp.Body).Decode(&readResp)
+	if err != nil {
+		return http.StatusNotFound, DFSException{Type: IOException, Msg: err.Error()}
+	}
+	// write to file system
+	ex := s.fileSystem.WriteReplica(request.Path, readResp.Data)
+	if ex != nil {
+		return http.StatusNotFound, ex
+	}
+	return http.StatusOK, SuccessResponse{true}
 }
 
 func (s *StorageServer) register() error {

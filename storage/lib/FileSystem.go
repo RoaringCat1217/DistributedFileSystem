@@ -90,6 +90,34 @@ func (fs *FileSystem) WriteFile(path string, data string, offset int64) *DFSExce
 	return nil
 }
 
+func (fs *FileSystem) WriteReplica(path string, data string) *DFSException {
+	if path == "" {
+		return &DFSException{IllegalArgumentException, "Path is invalid"}
+	}
+	path = filepath.Join(fs.directory, path)
+	parent := filepath.Join(path, "../")
+	err := os.MkdirAll(parent, 0777)
+	if err != nil {
+		return &DFSException{IOException, fmt.Sprintf("Error when creating parent directory: %s", err.Error())}
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		return &DFSException{IOException, fmt.Sprintf("Error when creating file: %s", err.Error())}
+	}
+	defer file.Close()
+
+	// decode base64 string
+	decodedBytes, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return &DFSException{IOException, fmt.Sprintf("Error when decoding string: %s", err.Error())}
+	}
+	_, err = file.WriteAt(decodedBytes, 0)
+	if err != nil {
+		return &DFSException{Type: IOException, Msg: "Error writing to file"}
+	}
+	return nil
+}
+
 func (fs *FileSystem) GetFileSize(path string) (int64, *DFSException) {
 	fileInfo, err := fs.checkFileExist(path)
 	if err != nil {
@@ -161,34 +189,6 @@ func (fs *FileSystem) DeleteFile(path string) (bool, *DFSException) {
 	}
 
 	return true, nil
-}
-
-func (fs *FileSystem) CopyFile(sourcePath, destinationPath string) *DFSException {
-	sourceFilePath := filepath.Join(fs.directory, sourcePath)
-	destinationFilePath := filepath.Join(fs.directory, destinationPath)
-
-	sourceFileInfo, err := os.Stat(sourceFilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &DFSException{Type: FileNotFoundException, Msg: "Source file not found"}
-		}
-		return &DFSException{Type: IOException, Msg: "Error accessing source file"}
-	}
-	if sourceFileInfo.IsDir() {
-		return &DFSException{Type: FileNotFoundException, Msg: "Source path is a directory"}
-	}
-
-	data, err := os.ReadFile(sourceFilePath)
-	if err != nil {
-		return &DFSException{Type: IOException, Msg: "Error reading source file"}
-	}
-
-	err = os.WriteFile(destinationFilePath, data, 0644)
-	if err != nil {
-		return &DFSException{Type: IOException, Msg: "Error writing to destination file"}
-	}
-
-	return nil
 }
 
 // ListFiles lists all files in the directory.

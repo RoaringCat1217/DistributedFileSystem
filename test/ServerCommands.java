@@ -50,5 +50,5 @@ public class ServerCommands {
      *
      * TODO: change this string to start your second storage server using the above specification.
      */
-    public static final String storage1Command = "go run storage/main.go /tmp/dist-systems-1 localhost:8090 7010 7011";
+    public static final String storage1Command = "./out/storage 8051 8061 9000 ./tmp1";
 }

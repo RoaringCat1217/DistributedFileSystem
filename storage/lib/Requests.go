@@ -27,9 +27,9 @@ type CreateRequest struct {
 }
 
 type CopyRequest struct {
-	Path       string  `json:"path"`
-	SourceAddr string  `json:"source_addr" binding:"required"`
-	SourcePort float64 `json:"source_port" binding:"required"`
+	Path       string `json:"path"`
+	SourceAddr string `json:"server_ip"`
+	SourcePort int    `json:"server_port"`
 }
 
 type SizeRequest struct {
