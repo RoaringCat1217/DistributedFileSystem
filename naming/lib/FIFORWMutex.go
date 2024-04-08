@@ -1,5 +1,6 @@
 package naming
 
+// Queue - Simple FIFO queue implementation
 type Queue struct {
 	data []any
 	size int
@@ -54,11 +55,20 @@ func (q *Queue) Empty() bool {
 	return q.size == 0
 }
 
+// empty - an empty struct
+// It is the smallest possible object in Golang and is
+// passed through channels to synchronize goroutines.
 type empty struct{}
+
 type lockRequest struct {
 	readonly bool
 	granted  chan empty
 }
+
+// FIFORWMutex - A RWMutex that guarantees FIFO queueing
+// It has mostly the same interface as sync.RWMutex, but
+// sync.RWMutex does not guarantee FIFO property
+// All synchronization is done by a dedicated scheduler goroutine
 type FIFORWMutex struct {
 	rLock   chan chan empty
 	wLock   chan chan empty
@@ -99,14 +109,15 @@ func (lock *FIFORWMutex) Unlock() {
 	lock.wUnlock <- empty{}
 }
 
+// Destroy - terminate the scheduler goroutine
 func (lock *FIFORWMutex) Destroy() {
 	lock.quit <- empty{}
 }
 
 func (lock *FIFORWMutex) scheduler() {
-	queue := NewQueue()
-	nReading := 0
-	writing := false
+	queue := NewQueue() // request queue
+	nReading := 0       // number of readers
+	writing := false    // true if anyone is writing
 
 loop:
 	for {
@@ -118,6 +129,7 @@ loop:
 				granted <- empty{}
 				continue loop
 			}
+			// otherwise queue the request
 			request := lockRequest{
 				readonly: true,
 				granted:  granted,
@@ -131,6 +143,7 @@ loop:
 				granted <- empty{}
 				continue loop
 			}
+			// otherwise queue the request
 			request := lockRequest{
 				readonly: false,
 				granted:  granted,
@@ -160,6 +173,7 @@ loop:
 				request.granted <- empty{}
 			}
 			if nReading > 0 {
+				// granted to a reader already
 				// try to grant as many rlocks as possible
 				for !queue.Empty() {
 					request := queue.Peek().(lockRequest)

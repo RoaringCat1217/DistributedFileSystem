@@ -1,0 +1,282 @@
+package naming // import "naming/lib"
+
+
+CONSTANTS
+
+const (
+	IllegalArgumentException = "IllegalArgumentException"
+	FileNotFoundException    = "FileNotFoundException"
+	IllegalStateException    = "IllegalStateException"
+)
+
+FUNCTIONS
+
+func pathToNames(pth string) []string
+    pathToNames - decompose a path to a series of directory or file names The
+    root directory has name "" returns nil if the path is invalid
+
+
+TYPES
+
+type DFSException struct {
+	Type string `json:"exception_type"`
+	Msg  string `json:"exception_info"`
+}
+    DFSException - exceptions sent from naming server to a client
+
+type Directory struct {
+	name           string
+	parent         *Directory
+	subDirectories []*Directory
+	subFiles       []*FileInfo
+	lock           *FIFORWMutex
+	// list of r-locked files or directories
+	rLockedItems    map[string]*RLockedItem
+	rLockedItemsMtx sync.Mutex
+	// list of w-locked files or directories
+	wLockedItems    map[string]FSItem
+	wLockedItemsMtx sync.Mutex
+}
+    Directory - represents a directory in the DFS The root Directory is
+    responsible for keeping track of all files and directories in the file
+    system, and managing their locks.
+
+func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*FileInfo, *DFSException)
+    CreateFile - creates a new file in pth, and it is stored in storageServer
+    Assumes the client has w-lock of its parent directory
+
+func (d *Directory) DeletePath(pth string) (FSItem, *DFSException)
+    DeletePath - deletes a file or directory Assumes the client has w-lock of
+    its parent directory
+
+func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSException)
+    GetFileStorage - Get one of the storage servers that has a file Assumes the
+    client holds the r-lock of the file If there are multiple possible storage
+    servers, return a random one
+
+func (d *Directory) GetLock() *FIFORWMutex
+    GetLock - implements FSItem interface
+
+func (d *Directory) GetParentDir() *Directory
+    GetParentDir - implements FSItem interface
+
+func (d *Directory) GetPath() string
+    GetPath - return the absolute path of a directory
+
+func (d *Directory) ListDir(pth string) ([]string, *DFSException)
+    ListDir - lists files in a directory Assumes the client has r-lock of the
+    directory
+
+func (d *Directory) LockFileOrDirectory(pth string, readonly bool) (FSItem, *DFSException)
+    LockFileOrDirectory - locks a file or directory The locked file or directory
+    is added to root directory's lock tables
+
+func (d *Directory) MakeDirectory(pth string) (bool, *DFSException)
+    MakeDirectory - creates a new directory specified in pth Assumes the client
+    holds the w-lock of its parent directory
+
+func (d *Directory) PathExists(pth string) (bool, bool, *DFSException)
+    PathExists - check whether a path corresponds to a file, a directory, or
+    does not exist in the file system The first return value means whether the
+    path is a directory The second return value means whether the path is a file
+
+func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInfo) []bool
+    RegisterFiles - registers files from a newly registered storage server It
+    may need to create many files and directories, so it w-locks the entire file
+    system to prevent any deadlocks
+
+func (d *Directory) UnlockFileOrDirectory(pth string, readonly bool) *DFSException
+    UnlockFileOrDirectory - unlocks a file or directory It checks the root's
+    lock tables to guarantee the file or directory is locked before and has the
+    right lock type
+
+func (d *Directory) lockPath(names []string) *Directory
+    lockPath - rlock every directory in a path specified in names if it
+    succeeds, returns the last directory along the path if it fails, release
+    every lock it has acquired and returns nil
+
+func (d *Directory) unlockPath(dir *Directory)
+    unlockPath - unlocks rlocks from directory dir all the way to root
+
+func (d *Directory) walkPath(names []string) *Directory
+    walkPath - a helper method, walks the directories specified in names if it
+    succeeds, returns the last directory along the path if it fails, returns nil
+
+type FIFORWMutex struct {
+	rLock   chan chan empty
+	wLock   chan chan empty
+	rUnlock chan empty
+	wUnlock chan empty
+	quit    chan empty
+}
+    FIFORWMutex - A RWMutex that guarantees FIFO queueing It has mostly the same
+    interface as sync.RWMutex, but sync.RWMutex does not guarantee FIFO property
+    All synchronization is done by a dedicated scheduler goroutine
+
+func NewFIFORWMutex() *FIFORWMutex
+
+func (lock *FIFORWMutex) Destroy()
+    Destroy - terminate the scheduler goroutine
+
+func (lock *FIFORWMutex) Lock()
+
+func (lock *FIFORWMutex) RLock()
+
+func (lock *FIFORWMutex) RUnlock()
+
+func (lock *FIFORWMutex) Unlock()
+
+func (lock *FIFORWMutex) scheduler()
+
+type FSItem interface {
+	GetParentDir() *Directory
+	GetLock() *FIFORWMutex
+}
+    FSItem - Either a *Directory or a *FileInfo Designed to make accessing lock
+    tables easier
+
+type FileInfo struct {
+	name   string
+	path   string
+	parent *Directory
+	lock   *FIFORWMutex
+	// fields used for replication
+	// any access to these fields must acquire rCountMtx
+	rCount         int
+	rCountMtx      sync.Mutex
+	storageServers []*StorageServerInfo
+}
+    FileInfo - represents a file in one or multiple storage servers
+
+func (f *FileInfo) GetLock() *FIFORWMutex
+    GetLock - implements FSItem
+
+func (f *FileInfo) GetParentDir() *Directory
+    GetParentDir - implements FSItem
+
+type ListFilesResponse struct {
+	Files []string `json:"files" binding:"required"`
+}
+
+type LockRequest struct {
+	Path      string `json:"path"`
+	Exclusive bool   `json:"exclusive"`
+}
+
+type NamingServer struct {
+	servicePort      int
+	registrationPort int
+	service          *gin.Engine
+	registration     *gin.Engine
+	root             *Directory
+	// fields that need locking before access
+	storageServers []*StorageServerInfo
+	lock           sync.RWMutex
+}
+
+func NewNamingServer(servicePort int, registrationPort int) *NamingServer
+    NewNamingServer - initialize a naming server, register all APIs
+
+func (s *NamingServer) Run()
+    Run - launch the naming server the caller will block until the naming server
+    fails
+
+func (s *NamingServer) createDirectoryHandler(body PathRequest) (int, any)
+    createDirectoryHandler - handler for client API /create_directory
+
+func (s *NamingServer) createFileHandler(body PathRequest) (int, any)
+    createFileHandler - handler for client API /create_file
+
+func (s *NamingServer) deleteHandler(body PathRequest) (int, any)
+    deleteHandler - handler for client API /delete
+
+func (s *NamingServer) getStorageHandler(body PathRequest) (int, any)
+    getStorageHandler - handler for client API /get_storage
+
+func (s *NamingServer) isDirectoryHandler(body PathRequest) (int, any)
+    isDirectoryHandler - handler for client API /is_directory
+
+func (s *NamingServer) isValidPathHandler(body PathRequest) (int, any)
+    isValidPathHandler - handler for client API /is_valid_path
+
+func (s *NamingServer) listDirHandler(body PathRequest) (int, any)
+    listDirHandler - handler for client API /list
+
+func (s *NamingServer) lockHandler(body LockRequest) (int, any)
+    lockHandler - handler for client API /lock
+
+func (s *NamingServer) registerStorageHandler(body RegisterRequest) (int, any)
+    handler for registration API
+
+func (s *NamingServer) storageCopyCommand(file *FileInfo, dst *StorageServerInfo, src *StorageServerInfo) bool
+    storageCopyCommand - send copy command to dst, asking it to copy from src
+
+func (s *NamingServer) storageCreateCommand(file *FileInfo)
+    storageCreateCommand - create a new file on a storage server Storage server
+    is specified in file.storageServers
+
+func (s *NamingServer) storageDeleteCommand(path string, storageServer *StorageServerInfo, wg *sync.WaitGroup)
+    storageDeleteCommand - send delete command to storageServer This method is
+    called asynchronously in a goroutine and use wg to synchronize with caller
+
+func (s *NamingServer) unlockHandler(body LockRequest) (int, any)
+    unlockHandler - handler for client API /unlock
+
+type PathRequest struct {
+	Path string `json:"path"`
+}
+
+type Queue struct {
+	data []any
+	size int
+	cap  int
+	head int
+}
+    Queue - Simple FIFO queue implementation
+
+func NewQueue() *Queue
+
+func (q *Queue) Dequeue() any
+
+func (q *Queue) Empty() bool
+
+func (q *Queue) Enqueue(elem any)
+
+func (q *Queue) Peek() any
+
+type RLockedItem struct {
+	item  FSItem
+	count int
+}
+    RLockedItem - One entry in the r-lock table
+
+type RegisterRequest struct {
+	StorageIP   string   `json:"storage_ip" binding:"required"`
+	ClientPort  int      `json:"client_port" binding:"required"`
+	CommandPort int      `json:"command_port" binding:"required"`
+	Files       []string `json:"files"`
+}
+
+type StorageInfoResponse struct {
+	ServiceIP   string `json:"server_ip" binding:"required"`
+	ServicePort int    `json:"server_port" binding:"required"`
+}
+
+type StorageServerInfo struct {
+	clientPort  int
+	commandPort int
+}
+
+type SuccessResponse struct {
+	Success bool `json:"success" binding:"required"`
+}
+
+type empty struct{}
+    empty - an empty struct It is the smallest possible object in Golang and is
+    passed through channels to synchronize goroutines.
+
+type lockRequest struct {
+	readonly bool
+	granted  chan empty
+}
+

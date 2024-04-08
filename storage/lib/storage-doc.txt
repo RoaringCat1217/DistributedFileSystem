@@ -1,0 +1,135 @@
+package storage // import "storage/lib"
+
+
+CONSTANTS
+
+const FileNotFoundException = "FileNotFoundException"
+const IOException = "IOException"
+const IllegalArgumentException = "IllegalArgumentException"
+const IllegalStateException = "IllegalStateException"
+const IndexOutOfBoundsException = "IndexOutOfBoundsException"
+
+TYPES
+
+type CopyRequest struct {
+	Path       string  `json:"path"`
+	SourceAddr string  `json:"source_addr" binding:"required"`
+	SourcePort float64 `json:"source_port" binding:"required"`
+}
+
+type CreateRequest struct {
+	Path string `json:"path"`
+}
+
+type DFSException struct {
+	Type string `json:"exception_type"`
+	Msg  string `json:"exception_info"`
+}
+
+type DeleteRequest struct {
+	Path string `json:"path"`
+}
+
+type FileSystem struct {
+	directory string
+}
+    FileSystem represents the file system operations of the storage server.
+
+func (fs *FileSystem) CopyFile(sourcePath, destinationPath string) *DFSException
+
+func (fs *FileSystem) CreateFile(path string) (bool, *DFSException)
+
+func (fs *FileSystem) DeleteFile(path string) (bool, *DFSException)
+
+func (fs *FileSystem) DeleteFiles(paths []string) error
+    DeleteFiles deletes a list of files or directories.
+
+func (fs *FileSystem) GetFileSize(path string) (int64, *DFSException)
+
+func (fs *FileSystem) ListFiles() ([]string, error)
+    ListFiles lists all files in the directory.
+
+func (fs *FileSystem) Prune() error
+
+func (fs *FileSystem) ReadFile(path string, offset, length int64) (string, *DFSException)
+    ReadFile reads data from a file.
+
+func (fs *FileSystem) WriteFile(path string, data string, offset int64) *DFSException
+
+func (fs *FileSystem) checkFileExist(path string) (os.FileInfo, *DFSException)
+    isFile - Check if the path corresponds to an existing file
+
+type ReadRequest struct {
+	Path   string `json:"path"`
+	Offset int64  `json:"offset"`
+	Length int64  `json:"length"`
+}
+
+type ReadResponse struct {
+	Data string `json:"data" binding:"required"`
+}
+
+type RegisterRequest struct {
+	StorageIP   string   `json:"storage_ip"`
+	ClientPort  int      `json:"client_port"`
+	CommandPort int      `json:"command_port"`
+	Files       []string `json:"files"`
+}
+
+type RegisterResponse struct {
+	Files []string `json:"files" binding:"required"`
+}
+
+type SizeRequest struct {
+	Path string `json:"path"`
+}
+
+type SizeResponse struct {
+	Size int64 `json:"size" binding:"required"`
+}
+
+type StorageServer struct {
+	clientPort       int
+	commandPort      int
+	registrationPort int
+	service          *gin.Engine
+	command          *gin.Engine
+	mutex            sync.RWMutex
+	fileSystem       *FileSystem
+}
+
+func NewStorageServer(directory string, clientPort int, commandPort int, registrationPort int) *StorageServer
+
+func (s *StorageServer) Start()
+
+func (s *StorageServer) handleCopy(request CopyRequest) (int, any)
+    handleCopy handles the HTTP request for copying a file from another storage
+    server.
+
+func (s *StorageServer) handleCreate(request CreateRequest) (int, any)
+    handleCreate handles the HTTP request for creating a new file.
+
+func (s *StorageServer) handleDelete(request DeleteRequest) (int, any)
+    handleDelete handles the HTTP request for deleting a file.
+
+func (s *StorageServer) handleRead(request ReadRequest) (int, any)
+    handleRead handles the HTTP request for reading data from a file.
+
+func (s *StorageServer) handleSize(request SizeRequest) (int, any)
+    handleSize handles the HTTP request for retrieving the size of a file.
+
+func (s *StorageServer) handleWrite(request WriteRequest) (int, any)
+    handleWrite handles the HTTP request for writing data to a file.
+
+func (s *StorageServer) register() error
+
+type SuccessResponse struct {
+	Success bool `json:"success" binding:"required"`
+}
+
+type WriteRequest struct {
+	Path   string `json:"path"`
+	Offset int64  `json:"offset"`
+	Data   string `json:"data"`
+}
+

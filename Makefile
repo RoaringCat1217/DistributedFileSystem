@@ -53,7 +53,8 @@ clean:
 
 # generate documentation for the package of interest
 docs:
-	javadoc -cp .:$(GSONFILE) -private -link $(DOCLINK) -d $(DOCDIR) $(PKGNAME)
+	cd naming/lib; go doc -u -all > naming-doc.txt
+	cd storage/lib; go doc -u -all > storage-doc.txt
  
 # generate documentation for the test suite
 docs-test:

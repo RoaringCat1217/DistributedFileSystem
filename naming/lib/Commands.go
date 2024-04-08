@@ -9,7 +9,10 @@ import (
 	"sync"
 )
 
-// commands for storage servers
+// commands sent from the naming server to storage servers
+
+// storageCreateCommand - create a new file on a storage server
+// Storage server is specified in file.storageServers
 func (s *NamingServer) storageCreateCommand(file *FileInfo) {
 	url := fmt.Sprintf("http://localhost:%d/storage_create", file.storageServers[0].commandPort)
 	body := bytes.NewReader([]byte(fmt.Sprintf(`{"path":"%s"}`, file.path)))
@@ -34,6 +37,9 @@ func (s *NamingServer) storageCreateCommand(file *FileInfo) {
 		return
 	}
 }
+
+// storageDeleteCommand - send delete command to storageServer
+// This method is called asynchronously in a goroutine and use wg to synchronize with caller
 func (s *NamingServer) storageDeleteCommand(path string, storageServer *StorageServerInfo, wg *sync.WaitGroup) {
 	defer wg.Done()
 	url := fmt.Sprintf("http://localhost:%d/storage_delete", storageServer.commandPort)
@@ -60,6 +66,7 @@ func (s *NamingServer) storageDeleteCommand(path string, storageServer *StorageS
 	}
 }
 
+// storageCopyCommand - send copy command to dst, asking it to copy from src
 func (s *NamingServer) storageCopyCommand(file *FileInfo, dst *StorageServerInfo, src *StorageServerInfo) bool {
 	url := fmt.Sprintf("http://localhost:%d/storage_copy", dst.commandPort)
 	body := bytes.NewReader([]byte(fmt.Sprintf(`{"path":"%s", "server_ip": "127.0.0.1", "server_port": %d}`, file.path, src.clientPort)))

@@ -23,6 +23,7 @@ type NamingServer struct {
 	lock           sync.RWMutex
 }
 
+// NewNamingServer - initialize a naming server, register all APIs
 func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 	namingServer := NamingServer{
 		servicePort:      servicePort,
@@ -142,6 +143,8 @@ func NewNamingServer(servicePort int, registrationPort int) *NamingServer {
 	return &namingServer
 }
 
+// Run - launch the naming server
+// the caller will block until the naming server fails
 func (s *NamingServer) Run() {
 	chanErr := make(chan error)
 	go func() {

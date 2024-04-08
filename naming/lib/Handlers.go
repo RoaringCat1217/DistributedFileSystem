@@ -6,12 +6,13 @@ import (
 	"sync"
 )
 
-// handlers for client APIs
+// isValidPathHandler - handler for client API /is_valid_path
 func (s *NamingServer) isValidPathHandler(body PathRequest) (int, any) {
 	foundDir, foundFile, _ := s.root.PathExists(body.Path)
 	return http.StatusOK, SuccessResponse{foundDir || foundFile}
 }
 
+// getStorageHandler - handler for client API /get_storage
 func (s *NamingServer) getStorageHandler(body PathRequest) (int, any) {
 	storageServer, err := s.root.GetFileStorage(body.Path)
 	if err != nil {
@@ -20,6 +21,7 @@ func (s *NamingServer) getStorageHandler(body PathRequest) (int, any) {
 	return http.StatusOK, StorageInfoResponse{"127.0.0.1", storageServer.clientPort}
 }
 
+// createDirectoryHandler - handler for client API /create_directory
 func (s *NamingServer) createDirectoryHandler(body PathRequest) (int, any) {
 	success, err := s.root.MakeDirectory(body.Path)
 	if err != nil {
@@ -28,6 +30,7 @@ func (s *NamingServer) createDirectoryHandler(body PathRequest) (int, any) {
 	return http.StatusOK, SuccessResponse{success}
 }
 
+// deleteHandler - handler for client API /delete
 func (s *NamingServer) deleteHandler(body PathRequest) (int, any) {
 	deletedItem, err := s.root.DeletePath(body.Path)
 	if err != nil {
@@ -59,6 +62,7 @@ func (s *NamingServer) deleteHandler(body PathRequest) (int, any) {
 	return http.StatusOK, SuccessResponse{true}
 }
 
+// createFileHandler - handler for client API /create_file
 func (s *NamingServer) createFileHandler(body PathRequest) (int, any) {
 	// allocate a storage server
 	s.lock.RLock()
@@ -85,6 +89,7 @@ func (s *NamingServer) createFileHandler(body PathRequest) (int, any) {
 	return http.StatusOK, SuccessResponse{success}
 }
 
+// listDirHandler - handler for client API /list
 func (s *NamingServer) listDirHandler(body PathRequest) (int, any) {
 	files, err := s.root.ListDir(body.Path)
 	if err != nil {
@@ -93,6 +98,7 @@ func (s *NamingServer) listDirHandler(body PathRequest) (int, any) {
 	return http.StatusOK, ListFilesResponse{files}
 }
 
+// isDirectoryHandler - handler for client API /is_directory
 func (s *NamingServer) isDirectoryHandler(body PathRequest) (int, any) {
 	foundDir, foundFile, err := s.root.PathExists(body.Path)
 	if err != nil {
@@ -104,6 +110,7 @@ func (s *NamingServer) isDirectoryHandler(body PathRequest) (int, any) {
 	return http.StatusOK, SuccessResponse{foundDir}
 }
 
+// lockHandler - handler for client API /lock
 func (s *NamingServer) lockHandler(body LockRequest) (int, any) {
 	fsItem, err := s.root.LockFileOrDirectory(body.Path, !body.Exclusive)
 	if err != nil {
@@ -159,6 +166,7 @@ func (s *NamingServer) lockHandler(body LockRequest) (int, any) {
 	return http.StatusOK, nil
 }
 
+// unlockHandler - handler for client API /unlock
 func (s *NamingServer) unlockHandler(body LockRequest) (int, any) {
 	err := s.root.UnlockFileOrDirectory(body.Path, !body.Exclusive)
 	if err != nil {

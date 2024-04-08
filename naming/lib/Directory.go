@@ -8,6 +8,9 @@ import (
 	"sync"
 )
 
+// pathToNames - decompose a path to a series of directory or file names
+// The root directory has name ""
+// returns nil if the path is invalid
 func pathToNames(pth string) []string {
 	pth = path.Clean(pth)
 	if pth[0] != '/' {
@@ -19,16 +22,22 @@ func pathToNames(pth string) []string {
 	return strings.Split(pth, "/")
 }
 
+// FSItem - Either a *Directory or a *FileInfo
+// Designed to make accessing lock tables easier
 type FSItem interface {
 	GetParentDir() *Directory
 	GetLock() *FIFORWMutex
 }
 
+// RLockedItem - One entry in the r-lock table
 type RLockedItem struct {
 	item  FSItem
 	count int
 }
 
+// Directory - represents a directory in the DFS
+// The root Directory is responsible for keeping track of all files and directories
+// in the file system, and managing their locks.
 type Directory struct {
 	name           string
 	parent         *Directory
@@ -43,33 +52,40 @@ type Directory struct {
 	wLockedItemsMtx sync.Mutex
 }
 
+// GetParentDir - implements FSItem interface
 func (d *Directory) GetParentDir() *Directory {
 	return d.parent
 }
 
+// GetLock - implements FSItem interface
 func (d *Directory) GetLock() *FIFORWMutex {
 	return d.lock
 }
 
+// FileInfo - represents a file in one or multiple storage servers
 type FileInfo struct {
 	name   string
 	path   string
 	parent *Directory
 	lock   *FIFORWMutex
 	// fields used for replication
+	// any access to these fields must acquire rCountMtx
 	rCount         int
 	rCountMtx      sync.Mutex
 	storageServers []*StorageServerInfo
 }
 
+// GetParentDir - implements FSItem
 func (f *FileInfo) GetParentDir() *Directory {
 	return f.parent
 }
 
+// GetLock - implements FSItem
 func (f *FileInfo) GetLock() *FIFORWMutex {
 	return f.lock
 }
 
+// GetPath - return the absolute path of a directory
 func (d *Directory) GetPath() string {
 	names := make([]string, 0)
 	curr := d
@@ -87,6 +103,9 @@ func (d *Directory) GetPath() string {
 	return strings.Join(names, "/")
 }
 
+// walkPath - a helper method, walks the directories specified in names
+// if it succeeds, returns the last directory along the path
+// if it fails, returns nil
 func (d *Directory) walkPath(names []string) *Directory {
 	if len(names) == 0 {
 		return nil
@@ -112,7 +131,9 @@ func (d *Directory) walkPath(names []string) *Directory {
 	return curr
 }
 
-// lockPath - rlock every directory in a path
+// lockPath - rlock every directory in a path specified in names
+// if it succeeds, returns the last directory along the path
+// if it fails, release every lock it has acquired and returns nil
 func (d *Directory) lockPath(names []string) *Directory {
 	if len(names) == 0 {
 		return nil
@@ -141,6 +162,7 @@ func (d *Directory) lockPath(names []string) *Directory {
 	return curr
 }
 
+// unlockPath - unlocks rlocks from directory dir all the way to root
 func (d *Directory) unlockPath(dir *Directory) {
 	if dir == nil {
 		return
@@ -152,6 +174,10 @@ func (d *Directory) unlockPath(dir *Directory) {
 	}
 }
 
+// PathExists - check whether a path corresponds to a file, a directory,
+// or does not exist in the file system
+// The first return value means whether the path is a directory
+// The second return value means whether the path is a file
 func (d *Directory) PathExists(pth string) (bool, bool, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
@@ -184,6 +210,8 @@ func (d *Directory) PathExists(pth string) (bool, bool, *DFSException) {
 	return foundDir, foundFile, nil
 }
 
+// MakeDirectory - creates a new directory specified in pth
+// Assumes the client holds the w-lock of its parent directory
 func (d *Directory) MakeDirectory(pth string) (bool, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
@@ -229,6 +257,9 @@ func (d *Directory) MakeDirectory(pth string) (bool, *DFSException) {
 	return true, nil
 }
 
+// GetFileStorage - Get one of the storage servers that has a file
+// Assumes the client holds the r-lock of the file
+// If there are multiple possible storage servers, return a random one
 func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
@@ -253,6 +284,8 @@ func (d *Directory) GetFileStorage(pth string) (*StorageServerInfo, *DFSExceptio
 	return nil, &DFSException{FileNotFoundException, fmt.Sprintf("cannot find file %s.", pth)}
 }
 
+// CreateFile - creates a new file in pth, and it is stored in storageServer
+// Assumes the client has w-lock of its parent directory
 func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*FileInfo, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
@@ -296,6 +329,8 @@ func (d *Directory) CreateFile(pth string, storageServer *StorageServerInfo) (*F
 	return newFile, nil
 }
 
+// DeletePath - deletes a file or directory
+// Assumes the client has w-lock of its parent directory
 func (d *Directory) DeletePath(pth string) (FSItem, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
@@ -343,6 +378,8 @@ func (d *Directory) DeletePath(pth string) (FSItem, *DFSException) {
 	return deletedFile, nil
 }
 
+// ListDir - lists files in a directory
+// Assumes the client has r-lock of the directory
 func (d *Directory) ListDir(pth string) ([]string, *DFSException) {
 	names := pathToNames(pth)
 	if len(names) == 0 {
@@ -363,6 +400,8 @@ func (d *Directory) ListDir(pth string) ([]string, *DFSException) {
 	return itemNames, nil
 }
 
+// LockFileOrDirectory - locks a file or directory
+// The locked file or directory is added to root directory's lock tables
 func (d *Directory) LockFileOrDirectory(pth string, readonly bool) (FSItem, *DFSException) {
 	pth = path.Clean(pth)
 	names := pathToNames(pth)
@@ -418,6 +457,9 @@ func (d *Directory) LockFileOrDirectory(pth string, readonly bool) (FSItem, *DFS
 	return fsItem, nil
 }
 
+// UnlockFileOrDirectory - unlocks a file or directory
+// It checks the root's lock tables to guarantee the file or directory
+// is locked before and has the right lock type
 func (d *Directory) UnlockFileOrDirectory(pth string, readonly bool) *DFSException {
 	if len(pathToNames(pth)) == 0 {
 		return &DFSException{IllegalArgumentException, fmt.Sprintf("path %s is illegal.", pth)}
@@ -453,6 +495,9 @@ func (d *Directory) UnlockFileOrDirectory(pth string, readonly bool) *DFSExcepti
 	return nil
 }
 
+// RegisterFiles - registers files from a newly registered storage server
+// It may need to create many files and directories, so it w-locks the
+// entire file system to prevent any deadlocks
 func (d *Directory) RegisterFiles(pths []string, storageServer *StorageServerInfo) []bool {
 	// lock the entire FS
 	d.lock.Lock()
